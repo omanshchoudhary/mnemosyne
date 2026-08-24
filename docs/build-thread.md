@@ -11,3 +11,4 @@ Posts in reading order (oldest first).
 5. **How a Disk-Oriented DBMS Works in Our System** — https://x.com/PhantomC0der/status/2091416702634582490
 6. **Pages: The Basic Unit of Disk I/O** — https://x.com/PhantomC0der/status/2091524185747337615
 7. **What Does a Page Actually Look Like?** — https://x.com/PhantomC0der/status/2091737415283274144
+8. **Inside the Page: Tuple Layout** — https://x.com/PhantomC0der/status/2091782722922725587

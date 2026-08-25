@@ -10,6 +10,12 @@ pub enum Error {
 
     #[error("slot {0} was already deleted")]
     SlotDeleted(u16),
+
+    #[error("page {requested} does not exist, the file holds {page_count} pages")]
+    PageOutOfRange { requested: u64, page_count: u64 },
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

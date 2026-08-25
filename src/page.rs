@@ -30,6 +30,14 @@ impl Page {
         }
     }
 
+    pub(crate) fn from_bytes(data: [u8; PAGE_SIZE]) -> Self {
+        Self { data }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
     pub(crate) fn read_u16(&self, offset: usize) -> u16 {
         // 2 bytes integer
         let raw: [u8; 2] = self.data[offset..offset + 2].try_into().unwrap();

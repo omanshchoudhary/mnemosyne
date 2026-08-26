@@ -16,7 +16,8 @@ ending at snapshot-isolated transactions. No SQL layer, no query planner. Just t
 parts of a database that make data survive a power cut.
 
 Work in progress. Built so far: fixed 4 KB pages with typed reads and writes at
-explicit offsets, and a disk manager that reads, writes, allocates and syncs them.
+explicit offsets, a slotted layout storing variable length records addressed by
+slot id, and a disk manager that reads, writes, allocates and syncs pages.
 
 ## Build
 

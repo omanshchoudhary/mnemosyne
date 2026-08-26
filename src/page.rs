@@ -1,3 +1,5 @@
+pub mod slotted;
+
 pub const PAGE_SIZE: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,6 +40,10 @@ impl Page {
         &self.data
     }
 
+    pub(crate) fn read_u8(&self, offset: usize) -> u8 {
+        self.data[offset]
+    }
+
     pub(crate) fn read_u16(&self, offset: usize) -> u16 {
         // 2 bytes integer
         let raw: [u8; 2] = self.data[offset..offset + 2].try_into().unwrap();
@@ -54,6 +60,10 @@ impl Page {
         // 8 bytes integer
         let raw: [u8; 8] = self.data[offset..offset + 8].try_into().unwrap();
         u64::from_le_bytes(raw)
+    }
+
+    pub(crate) fn write_u8(&mut self, offset: usize, value: u8) {
+        self.data[offset] = value;
     }
 
     pub(crate) fn write_u16(&mut self, offset: usize, value: u16) {

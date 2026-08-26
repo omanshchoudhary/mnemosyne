@@ -1,0 +1,283 @@
+// TODO: drop once the buffer pool and B+tree call into this layer.
+#![allow(dead_code)]
+
+use crate::error::{Error, Result};
+use crate::page::{PAGE_SIZE, Page};
+
+pub(crate) type SlotId = u16;
+
+const OFF_LSN: usize = 0; // u64 - log sequence number (WAL)
+const OFF_CHECKSUM: usize = 8; // u32 - CRC32 of the rest of the page
+const OFF_PAGE_TYPE: usize = 12; // u8  - slotted / leaf / internal
+const OFF_FLAGS: usize = 13; // u8  - reserved
+const OFF_SLOT_COUNT: usize = 14; // u16 - number of slot entries
+const OFF_FREE_PTR: usize = 16; // u16 - start of the data region
+const OFF_FREE_BYTES: usize = 18; // u16 - free bytes, excluding fragmentation
+const OFF_RESERVED: usize = 20; // 4 bytes spare
+pub(crate) const HEADER_SIZE: usize = 24;
+
+const SLOT_SIZE: usize = 4; // offset (2 bytes) + length (2 bytes)
+
+const PAGE_TYPE_SLOTTED: u8 = 1;
+
+impl Page {
+    // A zeroed page is not a valid slotted page. Call this once on allocation.
+    pub(crate) fn init_slotted(&mut self) {
+        self.write_u64(OFF_LSN, 0);
+        self.write_u32(OFF_CHECKSUM, 0);
+        self.write_u8(OFF_PAGE_TYPE, PAGE_TYPE_SLOTTED);
+        self.write_u8(OFF_FLAGS, 0);
+        self.write_u16(OFF_SLOT_COUNT, 0);
+        // data grows down from the end, so the free pointer starts past the last byte
+        self.write_u16(OFF_FREE_PTR, PAGE_SIZE as u16);
+        self.write_u16(OFF_FREE_BYTES, (PAGE_SIZE - HEADER_SIZE) as u16);
+        self.write_u32(OFF_RESERVED, 0);
+    }
+
+    pub(crate) fn slot_count(&self) -> u16 {
+        self.read_u16(OFF_SLOT_COUNT)
+    }
+
+    pub(crate) fn free_space(&self) -> usize {
+        self.read_u16(OFF_FREE_BYTES) as usize
+    }
+
+    pub(crate) fn insert_record(&mut self, record: &[u8]) -> Result<SlotId> {
+        if self.free_space() < SLOT_SIZE + record.len() {
+            return Err(Error::PageFull {
+                size: record.len() + SLOT_SIZE,
+                free: self.free_space(),
+            });
+        }
+
+        // ids are 0-based, so with N slots the next free id is N
+        let new_slot = self.slot_count();
+        let record_offset = self.read_u16(OFF_FREE_PTR) as usize - record.len();
+        let free_left = self.free_space() - record.len() - SLOT_SIZE;
+
+        self.write_bytes(record_offset, record);
+        self.write_slot(new_slot, record_offset as u16, record.len() as u16);
+
+        // header last, so an early return can never leave a half-updated page
+        self.write_u16(OFF_FREE_PTR, record_offset as u16);
+        self.write_u16(OFF_FREE_BYTES, free_left as u16);
+        self.write_u16(OFF_SLOT_COUNT, new_slot + 1);
+
+        Ok(new_slot)
+    }
+    pub(crate) fn get_record(&self, slot: SlotId) -> Result<&[u8]> {
+        if slot >= self.slot_count() {
+            return Err(Error::NoSuchSlot(slot));
+        }
+
+        let (offset, len) = self.read_slot(slot);
+        // offset 0 lands inside the header, so it can never be a live record
+        if offset == 0 {
+            return Err(Error::SlotDeleted(slot));
+        }
+
+        Ok(self.read_bytes(offset as usize, len as usize))
+    }
+    pub(crate) fn delete_record(&mut self, slot: SlotId) -> Result<()> {
+        if slot >= self.slot_count() {
+            return Err(Error::NoSuchSlot(slot));
+        }
+
+        let (offset, _) = self.read_slot(slot);
+        if offset == 0 {
+            return Err(Error::SlotDeleted(slot));
+        }
+
+        // tombstone only: the record bytes stay put until compaction reclaims them
+        self.write_slot(slot, 0, 0);
+        Ok(())
+    }
+
+    fn slot_entry_pos(slot: SlotId) -> usize {
+        HEADER_SIZE + slot as usize * SLOT_SIZE
+    }
+
+    fn read_slot(&self, slot: SlotId) -> (u16, u16) {
+        let pos = Self::slot_entry_pos(slot);
+        (self.read_u16(pos), self.read_u16(pos + 2))
+    }
+
+    fn write_slot(&mut self, slot: SlotId, offset: u16, len: u16) {
+        let pos = Self::slot_entry_pos(slot);
+        self.write_u16(pos, offset);
+        self.write_u16(pos + 2, len);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slotted_page() -> Page {
+        let mut page = Page::new();
+        page.init_slotted();
+        page
+    }
+
+    // free space recomputed from the layout, ignoring the cached header field
+    fn derived_free_space(page: &Page) -> usize {
+        page.read_u16(OFF_FREE_PTR) as usize
+            - (HEADER_SIZE + page.slot_count() as usize * SLOT_SIZE)
+    }
+
+    #[test]
+    fn init_gives_an_empty_page() {
+        let page = slotted_page();
+
+        assert_eq!(page.slot_count(), 0);
+        assert_eq!(page.free_space(), PAGE_SIZE - HEADER_SIZE);
+        assert_eq!(page.read_u8(OFF_PAGE_TYPE), PAGE_TYPE_SLOTTED);
+        assert_eq!(page.read_u16(OFF_FREE_PTR) as usize, PAGE_SIZE);
+    }
+
+    #[test]
+    fn an_uninitialised_page_accepts_nothing() {
+        // allocate_page hands back zeros, so init_slotted is the caller's job
+        let mut page = Page::new();
+
+        assert!(matches!(
+            page.insert_record(b"x"),
+            Err(Error::PageFull { .. })
+        ));
+    }
+
+    #[test]
+    fn three_records_round_trip() {
+        let mut page = slotted_page();
+
+        assert_eq!(page.insert_record(b"first").unwrap(), 0);
+        assert_eq!(page.insert_record(b"second one").unwrap(), 1);
+        assert_eq!(page.insert_record(b"third record").unwrap(), 2);
+
+        assert_eq!(page.get_record(0).unwrap(), b"first");
+        assert_eq!(page.get_record(1).unwrap(), b"second one");
+        assert_eq!(page.get_record(2).unwrap(), b"third record");
+        assert_eq!(page.slot_count(), 3);
+    }
+
+    #[test]
+    fn records_land_at_descending_offsets() {
+        // a constant offset would pass every round trip test while each record
+        // quietly overwrote the last, so check the offsets themselves
+        let mut page = slotted_page();
+        for _ in 0..3 {
+            page.insert_record(b"same bytes").unwrap();
+        }
+
+        let (first, _) = page.read_slot(0);
+        let (second, _) = page.read_slot(1);
+        let (third, _) = page.read_slot(2);
+
+        assert!(
+            first > second && second > third,
+            "data grows down, got {first} {second} {third}"
+        );
+    }
+
+    #[test]
+    fn deleting_the_middle_leaves_the_others_readable() {
+        let mut page = slotted_page();
+        page.insert_record(b"keep me").unwrap();
+        page.insert_record(b"delete me").unwrap();
+        page.insert_record(b"keep me too").unwrap();
+
+        page.delete_record(1).unwrap();
+
+        assert_eq!(page.get_record(0).unwrap(), b"keep me");
+        assert!(matches!(page.get_record(1), Err(Error::SlotDeleted(1))));
+        assert_eq!(page.get_record(2).unwrap(), b"keep me too");
+        // the slot array never shrinks, dead entries still count
+        assert_eq!(page.slot_count(), 3);
+    }
+
+    #[test]
+    fn insert_after_delete_takes_a_fresh_slot() {
+        let mut page = slotted_page();
+        page.insert_record(b"zero").unwrap();
+        page.insert_record(b"one").unwrap();
+        page.insert_record(b"two").unwrap();
+        page.delete_record(1).unwrap();
+
+        // no slot reuse yet, so the next id is 3 and slot 1 stays dead
+        assert_eq!(page.insert_record(b"three").unwrap(), 3);
+
+        assert_eq!(page.get_record(0).unwrap(), b"zero");
+        assert!(matches!(page.get_record(1), Err(Error::SlotDeleted(1))));
+        assert_eq!(page.get_record(2).unwrap(), b"two");
+        assert_eq!(page.get_record(3).unwrap(), b"three");
+    }
+
+    #[test]
+    fn deleting_twice_is_an_error() {
+        let mut page = slotted_page();
+        page.insert_record(b"gone").unwrap();
+
+        assert!(page.delete_record(0).is_ok());
+        assert!(matches!(page.delete_record(0), Err(Error::SlotDeleted(0))));
+    }
+
+    #[test]
+    fn slots_that_were_never_handed_out_are_an_error() {
+        let mut page = slotted_page();
+        assert!(matches!(page.get_record(0), Err(Error::NoSuchSlot(0))));
+
+        page.insert_record(b"only one").unwrap();
+        assert!(matches!(page.get_record(1), Err(Error::NoSuchSlot(1))));
+        assert!(matches!(page.delete_record(9), Err(Error::NoSuchSlot(9))));
+    }
+
+    #[test]
+    fn a_record_can_fill_the_page_exactly() {
+        let mut page = slotted_page();
+        let biggest = page.free_space() - SLOT_SIZE;
+
+        page.insert_record(&vec![7u8; biggest]).unwrap();
+
+        assert_eq!(page.free_space(), 0);
+        assert_eq!(page.get_record(0).unwrap().len(), biggest);
+        assert!(matches!(
+            page.insert_record(b"x"),
+            Err(Error::PageFull { .. })
+        ));
+    }
+
+    #[test]
+    fn inserting_until_full_leaves_every_record_intact() {
+        let mut page = slotted_page();
+        let mut ids = Vec::new();
+
+        loop {
+            let record = vec![ids.len() as u8; 100];
+            match page.insert_record(&record) {
+                Ok(slot) => ids.push(slot),
+                Err(Error::PageFull { .. }) => break,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+
+        assert!(ids.len() > 30, "expected a full page, got {}", ids.len());
+        for (i, &slot) in ids.iter().enumerate() {
+            assert_eq!(page.get_record(slot).unwrap(), &vec![i as u8; 100][..]);
+        }
+    }
+
+    #[test]
+    fn stored_free_space_matches_the_derived_value() {
+        // the price of caching free space in the header is that it can drift
+        let mut page = slotted_page();
+        assert_eq!(page.free_space(), derived_free_space(&page));
+
+        for i in 0..5usize {
+            page.insert_record(&vec![i as u8; 40 + i]).unwrap();
+            assert_eq!(page.free_space(), derived_free_space(&page));
+        }
+
+        page.delete_record(2).unwrap();
+        assert_eq!(page.free_space(), derived_free_space(&page));
+    }
+}

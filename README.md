@@ -28,3 +28,10 @@ cargo clippy --all-targets -- -D warnings
 
 Warnings are errors. A pre-commit hook runs formatting, lints and tests before
 anything lands.
+
+## Name
+
+Two waters sat side by side in the underworld. Drink from Lethe and you forget
+everything. Drink from Mnemosyne, the Greek titan of memory, and you keep it.
+
+Every storage engine is trying to be the second one.

@@ -14,6 +14,12 @@ pub enum Error {
     #[error("page {requested} does not exist, the file holds {page_count} pages")]
     PageOutOfRange { requested: u64, page_count: u64 },
 
+    #[error("every frame is pinned, nothing can be evicted")]
+    BufferPoolFull,
+
+    #[error("frame {0} is not pinned")]
+    FrameNotPinned(usize),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

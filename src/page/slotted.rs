@@ -14,7 +14,8 @@ const OFF_SLOT_COUNT: usize = 14; // u16 - number of slot entries
 const OFF_FREE_PTR: usize = 16; // u16 - start of the data region
 const OFF_FREE_BYTES: usize = 18; // u16 - free bytes, excluding fragmentation
 const OFF_RESERVED: usize = 20; // 4 bytes spare
-pub(crate) const HEADER_SIZE: usize = 24;
+const OFF_LINK: usize = 24; // 8 bytes for link(PageID)
+pub(crate) const HEADER_SIZE: usize = 32;
 
 const SLOT_SIZE: usize = 4; // offset (2 bytes) + length (2 bytes)
 
@@ -32,6 +33,7 @@ impl Page {
         self.write_u16(OFF_FREE_PTR, PAGE_SIZE as u16);
         self.write_u16(OFF_FREE_BYTES, (PAGE_SIZE - HEADER_SIZE) as u16);
         self.write_u32(OFF_RESERVED, 0);
+        self.write_u64(OFF_LINK, 0);
     }
 
     pub(crate) fn slot_count(&self) -> u16 {
@@ -40,6 +42,22 @@ impl Page {
 
     pub(crate) fn free_space(&self) -> usize {
         self.read_u16(OFF_FREE_BYTES) as usize
+    }
+
+    pub(crate) fn page_type(&self) -> u8 {
+        self.read_u8(OFF_PAGE_TYPE)
+    }
+
+    pub(crate) fn set_page_type(&mut self, page_type: u8) {
+        self.write_u8(OFF_PAGE_TYPE, page_type);
+    }
+
+    pub(crate) fn link(&self) -> u64 {
+        self.read_u64(OFF_LINK)
+    }
+
+    pub(crate) fn set_link(&mut self, value: u64) {
+        self.write_u64(OFF_LINK, value);
     }
 
     pub(crate) fn insert_record(&mut self, record: &[u8]) -> Result<SlotId> {

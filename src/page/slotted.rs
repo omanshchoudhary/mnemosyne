@@ -93,7 +93,6 @@ impl Page {
 
 
     pub(crate) fn insert_record_at(&mut self, slot: SlotId, record: &[u8]) -> Result<()> {
-    
         if slot > self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
         }
@@ -129,7 +128,7 @@ impl Page {
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
         }
-        // read the size of record 
+        // read the size of record
         let (_, len) = self.read_slot(slot);
 
         // shift records by 1 place left

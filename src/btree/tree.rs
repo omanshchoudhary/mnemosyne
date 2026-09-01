@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use crate::buffer::BufferPool;
+use crate::buffer::{BufferPool, FrameId};
 use crate::error::{Error, Result};
-use crate::page::PageId;
+use crate::page::{PageId, RecordId};
 
 // 0 reserved for MetaPage
 const META_PAGE_ID: PageId = PageId(0);
@@ -53,6 +53,35 @@ impl BTree {
         self.pool.page_mut(frame).set_root_page_id(root);
         self.pool.unpin(frame)?;
         Ok(())
+    }
+
+    fn find_leaf(&mut self, key: &[u8]) -> Result<FrameId> {
+        
+        let mut page_id = self.root()?;
+
+        loop {
+            let frame = self.pool.fetch_page(page_id)?;
+            if self.pool.page(frame).is_leaf() {
+                return Ok(frame);          // still pinned, on purpose
+            }
+            let child = self.pool.page(frame).child_for_key(key)?;
+            self.pool.unpin(frame)?;
+            page_id = child;
+        }
+    }
+
+    pub fn lookup(&mut self, key: &[u8]) -> Result<Option<RecordId>> {
+        let frame = self.find_leaf(key)?;
+
+        let (found, slot) = self.pool.page(frame).search_slot(key)?;
+        let record = if found {
+            Some(self.pool.page(frame).leaf_record_id(slot)?)
+        } else {
+            None
+        };
+
+        self.pool.unpin(frame)?;
+        Ok(record)
     }
 }
 

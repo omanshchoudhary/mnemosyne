@@ -250,4 +250,92 @@ mod tests {
             b"a much longer separator"
         );
     }
+
+    // insert_record appends, so feeding sorted keys leaves the slot array sorted
+    fn leaf_with(keys: &[&[u8]]) -> Page {
+        let mut page = leaf_page();
+        for key in keys {
+            put_leaf(&mut page, key, b"v");
+        }
+        page
+    }
+
+    #[test]
+    fn searching_an_empty_page_lands_at_slot_zero() {
+        // the signed bounds exist for this case, slot_count - 1 is -1 here
+        let page = leaf_page();
+
+        assert_eq!(page.search_slot(b"anything").unwrap(), (false, 0));
+    }
+
+    #[test]
+    fn every_key_present_is_found_at_its_own_slot() {
+        let page = leaf_with(&[b"a", b"c", b"e", b"g", b"i"]);
+
+        assert_eq!(page.search_slot(b"a").unwrap(), (true, 0));
+        assert_eq!(page.search_slot(b"c").unwrap(), (true, 1));
+        assert_eq!(page.search_slot(b"e").unwrap(), (true, 2));
+        assert_eq!(page.search_slot(b"g").unwrap(), (true, 3));
+        assert_eq!(page.search_slot(b"i").unwrap(), (true, 4));
+    }
+
+    #[test]
+    fn a_miss_reports_where_the_key_belongs() {
+        let page = leaf_with(&[b"a", b"c", b"e", b"g", b"i"]);
+
+        // before everything, between neighbours, and past the end
+        assert_eq!(page.search_slot(b"A").unwrap(), (false, 0));
+        assert_eq!(page.search_slot(b"b").unwrap(), (false, 1));
+        assert_eq!(page.search_slot(b"d").unwrap(), (false, 2));
+        assert_eq!(page.search_slot(b"h").unwrap(), (false, 4));
+        assert_eq!(page.search_slot(b"z").unwrap(), (false, 5));
+    }
+
+    #[test]
+    fn a_single_entry_page_answers_both_sides() {
+        let page = leaf_with(&[b"m"]);
+
+        assert_eq!(page.search_slot(b"m").unwrap(), (true, 0));
+        assert_eq!(page.search_slot(b"a").unwrap(), (false, 0));
+        assert_eq!(page.search_slot(b"z").unwrap(), (false, 1));
+    }
+
+    #[test]
+    fn a_prefix_sorts_before_the_longer_key() {
+        // byte order, not length order: "ab" comes after "a"
+        let page = leaf_with(&[b"a", b"ab", b"abc"]);
+
+        assert_eq!(page.search_slot(b"ab").unwrap(), (true, 1));
+        assert_eq!(page.search_slot(b"aa").unwrap(), (false, 1));
+        assert_eq!(page.search_slot(b"abcd").unwrap(), (false, 3));
+    }
+
+    #[test]
+    fn search_works_on_an_internal_node_too() {
+        // key_at picks the accessor by page type, so the same search must serve both
+        let mut page = internal_page(PageId(99));
+        put_internal(&mut page, PageId(1), b"d");
+        put_internal(&mut page, PageId(2), b"m");
+        put_internal(&mut page, PageId(3), b"t");
+
+        assert_eq!(page.search_slot(b"m").unwrap(), (true, 1));
+        assert_eq!(page.search_slot(b"a").unwrap(), (false, 0));
+        assert_eq!(page.search_slot(b"z").unwrap(), (false, 3));
+    }
+
+    #[test]
+    fn every_probe_is_correct_on_a_bigger_page() {
+        // 5 entries only ever exercise a couple of loop shapes
+        let keys: Vec<Vec<u8>> = (0..60u32).map(|i| format!("{i:04}").into_bytes()).collect();
+        let mut page = leaf_page();
+        for key in &keys {
+            put_leaf(&mut page, key, b"v");
+        }
+
+        for (i, key) in keys.iter().enumerate() {
+            assert_eq!(page.search_slot(key).unwrap(), (true, i as SlotId));
+        }
+        assert_eq!(page.search_slot(b"0000x").unwrap(), (false, 1));
+        assert_eq!(page.search_slot(b"9999").unwrap(), (false, 60));
+    }
 }

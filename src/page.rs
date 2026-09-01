@@ -13,6 +13,31 @@ impl PageId {
     }
 }
 
+// leaf in B+Tree stores this as value
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RecordId {
+    pub page: PageId,
+    pub slot: slotted::SlotId,
+}
+
+impl RecordId {
+    pub(crate) const SIZE: usize = 10; // u64 page + u16 slot
+
+    pub(crate) fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut raw = [0u8; Self::SIZE];
+        raw[..8].copy_from_slice(&self.page.0.to_le_bytes());
+        raw[8..].copy_from_slice(&self.slot.to_le_bytes());
+        raw
+    }
+
+    pub(crate) fn from_bytes(raw: &[u8]) -> Self {
+        Self {
+            page: PageId(u64::from_le_bytes(raw[..8].try_into().unwrap())),
+            slot: u16::from_le_bytes(raw[8..Self::SIZE].try_into().unwrap()),
+        }
+    }
+}
+
 // TODO: drop both allow(dead_code) once slotted.rs uses these.
 #[allow(dead_code)]
 pub struct Page {

@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
 use crate::error::Result;
-use crate::page::{Page, PageId, slotted::SlotId};
+use crate::page::{Page, PageId, RecordId, slotted::SlotId};
 
 const PAGE_TYPE_LEAF: u8 = 2;
 const PAGE_TYPE_INTERNAL: u8 = 3;
 
-const KEY_LEN_SIZE: usize = 2;
+const RID_SIZE: usize = RecordId::SIZE;
 const CHILD_SIZE: usize = 8;
 
 // Page 0 is the meta page
@@ -58,16 +58,13 @@ impl Page {
 
     pub(crate) fn leaf_key(&self, slot: SlotId) -> Result<&[u8]> {
         let entry = self.get_record(slot)?;
-        let key_len = leaf_key_len(entry);
-
-        Ok(&entry[KEY_LEN_SIZE..KEY_LEN_SIZE + key_len])
+        Ok(&entry[RID_SIZE..])
     }
 
-    pub(crate) fn leaf_value(&self, slot: SlotId) -> Result<&[u8]> {
+    // where the record actually lives
+    pub(crate) fn leaf_record_id(&self, slot: SlotId) -> Result<RecordId> {
         let entry = self.get_record(slot)?;
-        let key_len = leaf_key_len(entry);
-
-        Ok(&entry[KEY_LEN_SIZE + key_len..])
+        Ok(RecordId::from_bytes(&entry[..RID_SIZE]))
     }
     pub(crate) fn internal_key(&self, slot: SlotId) -> Result<&[u8]> {
         let entry = self.get_record(slot)?;
@@ -125,18 +122,13 @@ impl Page {
     }
 }
 
-// converting key+value as one blob to enter into a slotted page
-fn encode_leaf_entry(key: &[u8], value: &[u8]) -> Vec<u8> {
-    let mut entry: Vec<u8> = Vec::with_capacity(KEY_LEN_SIZE + key.len() + value.len());
-    entry.extend_from_slice(&(key.len() as u16).to_le_bytes());
+// converting rid+key as one blob to enter into a slotted page
+fn encode_leaf_entry(rid: RecordId, key: &[u8]) -> Vec<u8> {
+    let mut entry: Vec<u8> = Vec::with_capacity(RID_SIZE + key.len());
+    entry.extend_from_slice(&rid.to_bytes());
     entry.extend_from_slice(key);
-    entry.extend_from_slice(value);
 
     entry
-}
-
-fn leaf_key_len(entry: &[u8]) -> usize {
-    u16::from_le_bytes(entry[..KEY_LEN_SIZE].try_into().unwrap()) as usize
 }
 
 // converting child+key as one blob to enter into a slotted page
@@ -164,9 +156,16 @@ mod tests {
         page
     }
 
+    fn rid(page: u64, slot: SlotId) -> RecordId {
+        RecordId {
+            page: PageId(page),
+            slot,
+        }
+    }
+
     // inserts an encoded pair and hands back the slot it landed in
-    fn put_leaf(page: &mut Page, key: &[u8], value: &[u8]) -> SlotId {
-        page.insert_record(&encode_leaf_entry(key, value)).unwrap()
+    fn put_leaf(page: &mut Page, key: &[u8], record: RecordId) -> SlotId {
+        page.insert_record(&encode_leaf_entry(record, key)).unwrap()
     }
 
     fn put_internal(page: &mut Page, child: PageId, key: &[u8]) -> SlotId {
@@ -209,34 +208,33 @@ mod tests {
     #[test]
     fn a_leaf_entry_round_trips() {
         let mut page = leaf_page();
-        let slot = put_leaf(&mut page, b"apple", b"a red fruit");
+        let slot = put_leaf(&mut page, b"apple", rid(57, 3));
 
         assert_eq!(page.leaf_key(slot).unwrap(), b"apple");
-        assert_eq!(page.leaf_value(slot).unwrap(), b"a red fruit");
+        assert_eq!(page.leaf_record_id(slot).unwrap(), rid(57, 3));
     }
 
     #[test]
-    fn a_leaf_value_can_be_empty() {
-        // the value is whatever follows the key, so a zero length one is the
-        // case where the end of the slice has to be exactly right
+    fn a_record_id_past_a_single_byte_survives() {
+        // both halves are wider than a byte, and a truncating write would
+        // still pass on small ids
         let mut page = leaf_page();
-        let slot = put_leaf(&mut page, b"key", b"");
+        let slot = put_leaf(&mut page, b"key", rid(70_000, 300));
 
-        assert_eq!(page.leaf_key(slot).unwrap(), b"key");
-        assert_eq!(page.leaf_value(slot).unwrap(), b"");
+        assert_eq!(page.leaf_record_id(slot).unwrap(), rid(70_000, 300));
     }
 
     #[test]
     fn two_leaf_entries_stay_separate() {
         // one entry alone would still pass with a wrong offset or length
         let mut page = leaf_page();
-        let first = put_leaf(&mut page, b"a", b"short");
-        let second = put_leaf(&mut page, b"much longer key", b"v");
+        let first = put_leaf(&mut page, b"a", rid(1, 0));
+        let second = put_leaf(&mut page, b"much longer key", rid(2, 9));
 
         assert_eq!(page.leaf_key(first).unwrap(), b"a");
-        assert_eq!(page.leaf_value(first).unwrap(), b"short");
+        assert_eq!(page.leaf_record_id(first).unwrap(), rid(1, 0));
         assert_eq!(page.leaf_key(second).unwrap(), b"much longer key");
-        assert_eq!(page.leaf_value(second).unwrap(), b"v");
+        assert_eq!(page.leaf_record_id(second).unwrap(), rid(2, 9));
     }
 
     #[test]
@@ -268,8 +266,8 @@ mod tests {
     // insert_record appends, so feeding sorted keys leaves the slot array sorted
     fn leaf_with(keys: &[&[u8]]) -> Page {
         let mut page = leaf_page();
-        for key in keys {
-            put_leaf(&mut page, key, b"v");
+        for (i, key) in keys.iter().enumerate() {
+            put_leaf(&mut page, key, rid(1, i as SlotId));
         }
         page
     }
@@ -342,8 +340,8 @@ mod tests {
         // 5 entries only ever exercise a couple of loop shapes
         let keys: Vec<Vec<u8>> = (0..60u32).map(|i| format!("{i:04}").into_bytes()).collect();
         let mut page = leaf_page();
-        for key in &keys {
-            put_leaf(&mut page, key, b"v");
+        for (i, key) in keys.iter().enumerate() {
+            put_leaf(&mut page, key, rid(1, i as SlotId));
         }
 
         for (i, key) in keys.iter().enumerate() {

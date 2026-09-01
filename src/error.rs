@@ -20,6 +20,9 @@ pub enum Error {
     #[error("frame {0} is not pinned")]
     FrameNotPinned(usize),
 
+    #[error("page 0 is not a mnemosyne meta page, or its format version is unsupported")]
+    BadMetaPage,
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

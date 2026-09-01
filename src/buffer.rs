@@ -63,6 +63,11 @@ impl BufferPool {
         Ok((page_id, frame_id))
     }
 
+    // 0 means the file is brand new and holds no meta page yet
+    pub fn page_count(&self) -> Result<u64> {
+        self.disk.page_count()
+    }
+
     pub fn page(&self, frame_id: FrameId) -> &Page {
         &self.frames[frame_id].page
     }

@@ -331,4 +331,123 @@ mod tests {
         page.delete_record(2).unwrap();
         assert_eq!(page.free_space(), derived_free_space(&page));
     }
+
+    // the records in slot order, so a test can state the whole page in one line
+    fn records(page: &Page) -> Vec<Vec<u8>> {
+        (0..page.slot_count())
+            .map(|slot| page.get_record(slot).unwrap().to_vec())
+            .collect()
+    }
+
+    fn page_with(records: &[&[u8]]) -> Page {
+        let mut page = slotted_page();
+        for record in records {
+            page.insert_record(record).unwrap();
+        }
+        page
+    }
+
+    #[test]
+    fn inserting_at_the_front_pushes_everything_right() {
+        let mut page = page_with(&[b"b", b"c"]);
+
+        page.insert_record_at(0, b"a").unwrap();
+
+        assert_eq!(records(&page), vec![b"a", b"b", b"c"]);
+        assert_eq!(page.slot_count(), 3);
+    }
+
+    #[test]
+    fn inserting_in_the_middle_shifts_only_the_tail() {
+        let mut page = page_with(&[b"a", b"c", b"d"]);
+
+        page.insert_record_at(1, b"b").unwrap();
+
+        assert_eq!(records(&page), vec![b"a", b"b", b"c", b"d"]);
+    }
+
+    #[test]
+    fn inserting_at_slot_count_appends() {
+        // this is the position search_slot returns for a key past the last one
+        let mut page = page_with(&[b"a", b"b"]);
+
+        page.insert_record_at(2, b"c").unwrap();
+
+        assert_eq!(records(&page), vec![b"a", b"b", b"c"]);
+    }
+
+    #[test]
+    fn inserting_past_the_end_is_an_error() {
+        let mut page = page_with(&[b"a", b"b"]);
+
+        assert!(matches!(
+            page.insert_record_at(3, b"x"),
+            Err(Error::NoSuchSlot(3))
+        ));
+        // and the page is untouched
+        assert_eq!(records(&page), vec![b"a", b"b"]);
+        assert_eq!(page.slot_count(), 2);
+    }
+
+    #[test]
+    fn shifting_moves_slot_entries_not_record_bytes() {
+        // the whole point of the design: reordering is a slot array edit
+        let mut page = page_with(&[b"b", b"c"]);
+        let (b_offset, _) = page.read_slot(0);
+        let (c_offset, _) = page.read_slot(1);
+
+        page.insert_record_at(0, b"a").unwrap();
+
+        assert_eq!(page.read_slot(1).0, b_offset);
+        assert_eq!(page.read_slot(2).0, c_offset);
+    }
+
+    #[test]
+    fn a_run_of_sorted_inserts_keeps_the_page_ordered() {
+        // insert in a scrambled order, each one at the position a search would
+        // hand back, and the page must come out sorted
+        let mut page = slotted_page();
+        for record in [
+            b"m".as_slice(),
+            b"c",
+            b"t",
+            b"a",
+            b"z",
+            b"f",
+            b"q",
+            b"b",
+            b"y",
+        ] {
+            let at = records(&page).partition_point(|existing| existing.as_slice() < record);
+            page.insert_record_at(at as SlotId, record).unwrap();
+        }
+
+        assert_eq!(
+            records(&page),
+            vec![b"a", b"b", b"c", b"f", b"m", b"q", b"t", b"y", b"z"]
+        );
+    }
+
+    #[test]
+    fn a_full_page_rejects_a_positional_insert() {
+        let mut page = slotted_page();
+        let biggest = page.free_space() - SLOT_SIZE;
+        page.insert_record(&vec![7u8; biggest]).unwrap();
+
+        assert!(matches!(
+            page.insert_record_at(0, b"x"),
+            Err(Error::PageFull { .. })
+        ));
+        assert_eq!(page.slot_count(), 1);
+    }
+
+    #[test]
+    fn free_space_stays_consistent_after_positional_inserts() {
+        let mut page = slotted_page();
+
+        for i in 0..6usize {
+            page.insert_record_at(0, &vec![i as u8; 30 + i]).unwrap();
+            assert_eq!(page.free_space(), derived_free_space(&page));
+        }
+    }
 }

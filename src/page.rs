@@ -1,3 +1,4 @@
+pub mod meta;
 pub mod slotted;
 
 pub const PAGE_SIZE: usize = 4096;

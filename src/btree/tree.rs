@@ -55,3 +55,100 @@ impl BTree {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    const FRAMES: usize = 8;
+
+    // the TempDir has to outlive the tree, or the file is deleted underneath it
+    fn temp_db() -> (TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tree.db");
+        (dir, path)
+    }
+
+    #[test]
+    fn a_fresh_file_gets_a_meta_page_and_an_empty_root_leaf() {
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        // meta is page 0, so the first page the tree can use is 1
+        assert_eq!(tree.root().unwrap(), PageId(1));
+
+        let frame = tree.pool.fetch_page(PageId(1)).unwrap();
+        let root = tree.pool.page(frame);
+        assert!(root.is_leaf());
+        assert_eq!(root.slot_count(), 0);
+        assert_eq!(root.next_leaf(), None);
+        tree.pool.unpin(frame).unwrap();
+    }
+
+    #[test]
+    fn opening_a_fresh_file_writes_both_pages_to_disk() {
+        // open flushes, so the two pages must be on disk before it returns
+        let (_dir, path) = temp_db();
+        {
+            BTree::open(&path, FRAMES).unwrap();
+        }
+
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(len, 2 * crate::page::PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn reopening_finds_the_same_root() {
+        let (_dir, path) = temp_db();
+        {
+            let mut tree = BTree::open(&path, FRAMES).unwrap();
+            assert_eq!(tree.root().unwrap(), PageId(1));
+        }
+
+        // the second open must take the existing path, not bootstrap again
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+        assert_eq!(tree.root().unwrap(), PageId(1));
+        assert_eq!(tree.pool.page_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_new_root_survives_a_reopen() {
+        // what a root split does: point the meta page somewhere else
+        let (_dir, path) = temp_db();
+        {
+            let mut tree = BTree::open(&path, FRAMES).unwrap();
+            tree.set_root(PageId(7)).unwrap();
+            tree.pool.flush_all().unwrap();
+        }
+
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+        assert_eq!(tree.root().unwrap(), PageId(7));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_database_is_rejected() {
+        let (_dir, path) = temp_db();
+        // one page of junk, so page_count is not 0 and the magic check runs
+        std::fs::write(&path, vec![0xABu8; crate::page::PAGE_SIZE]).unwrap();
+
+        assert!(matches!(
+            BTree::open(&path, FRAMES),
+            Err(Error::BadMetaPage)
+        ));
+    }
+
+    #[test]
+    fn open_leaves_no_frame_pinned() {
+        // a pin leak would only show up much later, as a full pool
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, 2).unwrap();
+
+        // both frames hold open's pages, so allocating two more forces an
+        // eviction each, which is only possible if open unpinned them
+        for _ in 0..2 {
+            let (_, frame) = tree.pool.new_page().unwrap();
+            tree.pool.unpin(frame).unwrap();
+        }
+    }
+}

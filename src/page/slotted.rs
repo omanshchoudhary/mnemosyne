@@ -13,7 +13,8 @@ const OFF_FLAGS: usize = 13; // u8  - reserved
 const OFF_SLOT_COUNT: usize = 14; // u16 - number of slot entries
 const OFF_FREE_PTR: usize = 16; // u16 - start of the data region
 const OFF_FREE_BYTES: usize = 18; // u16 - free bytes, excluding fragmentation
-const OFF_RESERVED: usize = 20; // 4 bytes spare
+const OFF_FRAG_BYTES: usize = 20; // u16 - bytes stranded by removals, freed by compaction
+const OFF_RESERVED: usize = 22; // 2 bytes spare
 const OFF_LINK: usize = 24; // 8 bytes for link(PageID)
 pub(crate) const HEADER_SIZE: usize = 32;
 
@@ -32,7 +33,8 @@ impl Page {
         // data grows down from the end, so the free pointer starts past the last byte
         self.write_u16(OFF_FREE_PTR, PAGE_SIZE as u16);
         self.write_u16(OFF_FREE_BYTES, (PAGE_SIZE - HEADER_SIZE) as u16);
-        self.write_u32(OFF_RESERVED, 0);
+        self.write_u16(OFF_FRAG_BYTES, 0);
+        self.write_u16(OFF_RESERVED, 0);
         self.write_u64(OFF_LINK, 0);
     }
 
@@ -42,6 +44,11 @@ impl Page {
 
     pub(crate) fn free_space(&self) -> usize {
         self.read_u16(OFF_FREE_BYTES) as usize
+    }
+
+    // bytes a compaction would hand back, on top of free_space
+    pub(crate) fn frag_space(&self) -> usize {
+        self.read_u16(OFF_FRAG_BYTES) as usize
     }
 
     pub(crate) fn page_type(&self) -> u8 {
@@ -112,6 +119,28 @@ impl Page {
         self.write_u16(OFF_FREE_PTR, record_offset as u16);
         self.write_u16(OFF_FREE_BYTES, free_left as u16);
         self.write_u16(OFF_SLOT_COUNT, self.slot_count() + 1);
+
+        Ok(())
+    }
+
+
+    pub(crate) fn remove_record_at(&mut self, slot: SlotId) -> Result<()> {
+        // can't remove a thing which does not exist
+        if slot >= self.slot_count() {
+            return Err(Error::NoSuchSlot(slot));
+        }
+        // read the size of record 
+        let (_, len) = self.read_slot(slot);
+
+        // shift records by 1 place left
+        for i in slot + 1..self.slot_count() {
+            let (offset, len) = self.read_slot(i);
+            self.write_slot(i - 1, offset, len);
+        }
+
+        self.write_u16(OFF_FREE_BYTES, (self.free_space() + SLOT_SIZE) as u16);
+        self.write_u16(OFF_FRAG_BYTES, (self.frag_space() + len as usize) as u16);
+        self.write_u16(OFF_SLOT_COUNT, self.slot_count() - 1);
 
         Ok(())
     }

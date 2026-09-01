@@ -79,6 +79,36 @@ impl Page {
             entry[..CHILD_SIZE].try_into().unwrap(),
         )))
     }
+
+    // returns key of a slot in a page for binary search comparisions
+    pub(crate) fn key_at(&self, slot: SlotId) -> Result<&[u8]> {
+        if self.is_leaf() {
+            self.leaf_key(slot)
+        } else {
+            self.internal_key(slot)
+        }
+    }
+
+    // Binary Search
+    pub(crate) fn search_slot(&self, key: &[u8]) -> Result<(bool, SlotId)> {
+        let mut low: i32 = 0;
+        let mut high: i32 = self.slot_count() as i32 - 1;
+
+        while low <= high {
+            let mid = (low + high) / 2;
+            let mid_key = self.key_at(mid as SlotId)?;
+
+            if mid_key == key {
+                return Ok((true, mid as SlotId));
+            } else if mid_key > key {
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
+        }
+
+        Ok((false, low as SlotId))
+    }
 }
 
 // converting key+value as one blob to enter into a slotted page

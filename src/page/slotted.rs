@@ -479,4 +479,111 @@ mod tests {
             assert_eq!(page.free_space(), derived_free_space(&page));
         }
     }
+
+    #[test]
+    fn removing_the_front_pulls_everything_left() {
+        let mut page = page_with(&[b"a", b"b", b"c"]);
+
+        page.remove_record_at(0).unwrap();
+
+        assert_eq!(records(&page), vec![b"b", b"c"]);
+        assert_eq!(page.slot_count(), 2);
+    }
+
+    #[test]
+    fn removing_the_middle_closes_the_gap() {
+        // no tombstone, unlike delete_record: the array stays dense
+        let mut page = page_with(&[b"a", b"b", b"c", b"d"]);
+
+        page.remove_record_at(1).unwrap();
+
+        assert_eq!(records(&page), vec![b"a", b"c", b"d"]);
+    }
+
+    #[test]
+    fn removing_the_last_shifts_nothing() {
+        let mut page = page_with(&[b"a", b"b", b"c"]);
+
+        page.remove_record_at(2).unwrap();
+
+        assert_eq!(records(&page), vec![b"a", b"b"]);
+    }
+
+    #[test]
+    fn removing_past_the_end_is_an_error() {
+        let mut page = page_with(&[b"a", b"b"]);
+
+        assert!(matches!(
+            page.remove_record_at(2),
+            Err(Error::NoSuchSlot(2))
+        ));
+        assert_eq!(records(&page), vec![b"a", b"b"]);
+    }
+
+    #[test]
+    fn removing_strands_the_record_bytes_but_frees_the_slot() {
+        // sizes differ so a wrong slot's length would show up
+        let mut page = page_with(&[b"aa", b"bbbb", b"cccccc"]);
+        let free_before = page.free_space();
+        let free_ptr_before = page.read_u16(OFF_FREE_PTR);
+
+        page.remove_record_at(1).unwrap();
+
+        assert_eq!(page.frag_space(), 4);
+        assert_eq!(page.free_space(), free_before + SLOT_SIZE);
+        // the data region never moved, that is what makes those 4 bytes stranded
+        assert_eq!(page.read_u16(OFF_FREE_PTR), free_ptr_before);
+    }
+
+    #[test]
+    fn fragmentation_adds_up_over_several_removals() {
+        let mut page = page_with(&[b"aa", b"bbbb", b"cccccc"]);
+
+        page.remove_record_at(0).unwrap();
+        assert_eq!(page.frag_space(), 2);
+        page.remove_record_at(1).unwrap();
+        assert_eq!(page.frag_space(), 8);
+
+        assert_eq!(records(&page), vec![b"bbbb"]);
+    }
+
+    #[test]
+    fn removing_every_record_leaves_an_empty_page() {
+        let mut page = page_with(&[b"a", b"b", b"c"]);
+
+        for _ in 0..3 {
+            page.remove_record_at(0).unwrap();
+        }
+
+        assert_eq!(page.slot_count(), 0);
+        assert!(matches!(page.get_record(0), Err(Error::NoSuchSlot(0))));
+        assert!(matches!(
+            page.remove_record_at(0),
+            Err(Error::NoSuchSlot(0))
+        ));
+    }
+
+    #[test]
+    fn free_space_stays_consistent_across_removals() {
+        let mut page = slotted_page();
+        for i in 0..6usize {
+            page.insert_record(&vec![i as u8; 30 + i]).unwrap();
+        }
+
+        while page.slot_count() > 0 {
+            page.remove_record_at(0).unwrap();
+            assert_eq!(page.free_space(), derived_free_space(&page));
+        }
+    }
+
+    #[test]
+    fn insert_after_remove_keeps_the_order() {
+        // the tree does exactly this, remove a key then put another in its place
+        let mut page = page_with(&[b"a", b"c", b"e"]);
+
+        page.remove_record_at(1).unwrap();
+        page.insert_record_at(1, b"b").unwrap();
+
+        assert_eq!(records(&page), vec![b"a", b"b", b"e"]);
+    }
 }

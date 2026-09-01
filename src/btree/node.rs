@@ -109,6 +109,20 @@ impl Page {
 
         Ok((false, low as SlotId))
     }
+
+    pub(crate) fn child_for_key(&self, key: &[u8]) -> Result<PageId> {
+        let (found, slot) = self.search_slot(key)?;
+
+        let child_slot = if found { slot + 1 } else { slot };
+
+        if child_slot == self.slot_count() {
+            return Ok(self
+                .rightmost_child()
+                .expect("internal node without a rightmost child"));
+        }
+
+        self.internal_child(child_slot)
+    }
 }
 
 // converting key+value as one blob to enter into a slotted page

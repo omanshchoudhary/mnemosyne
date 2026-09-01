@@ -83,6 +83,39 @@ impl Page {
 
         Ok(new_slot)
     }
+
+
+    pub(crate) fn insert_record_at(&mut self, slot: SlotId, record: &[u8]) -> Result<()> {
+    
+        if slot > self.slot_count() {
+            return Err(Error::NoSuchSlot(slot));
+        }
+
+        if self.free_space() < SLOT_SIZE + record.len() {
+            return Err(Error::PageFull {
+                size: record.len() + SLOT_SIZE,
+                free: self.free_space(),
+            });
+        }
+        for i in (slot..self.slot_count()).rev() {
+            let (offset, len) = self.read_slot(i);
+            self.write_slot(i + 1, offset, len);
+        }
+
+        let record_offset = self.read_u16(OFF_FREE_PTR) as usize - record.len();
+        let free_left = self.free_space() - record.len() - SLOT_SIZE;
+
+        self.write_bytes(record_offset, record);
+        self.write_slot(slot, record_offset as u16, record.len() as u16);
+
+        // header updation
+        self.write_u16(OFF_FREE_PTR, record_offset as u16);
+        self.write_u16(OFF_FREE_BYTES, free_left as u16);
+        self.write_u16(OFF_SLOT_COUNT, self.slot_count() + 1);
+
+        Ok(())
+    }
+
     pub(crate) fn get_record(&self, slot: SlotId) -> Result<&[u8]> {
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));

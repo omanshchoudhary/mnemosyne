@@ -67,7 +67,7 @@ impl Page {
         self.write_u64(OFF_LINK, value);
     }
 
-    pub(crate) fn insert_record(&mut self, record: &[u8]) -> Result<SlotId> {
+    pub(crate) fn append_slot(&mut self, record: &[u8]) -> Result<SlotId> {
         if self.free_space() < SLOT_SIZE + record.len() {
             return Err(Error::PageFull {
                 size: record.len() + SLOT_SIZE,
@@ -91,7 +91,7 @@ impl Page {
         Ok(new_slot)
     }
 
-    pub(crate) fn insert_record_at(&mut self, slot: SlotId, record: &[u8]) -> Result<()> {
+    pub(crate) fn insert_slot_at(&mut self, slot: SlotId, record: &[u8]) -> Result<()> {
         if slot > self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
         }
@@ -121,7 +121,7 @@ impl Page {
         Ok(())
     }
 
-    pub(crate) fn remove_record_at(&mut self, slot: SlotId) -> Result<()> {
+    pub(crate) fn remove_slot_at(&mut self, slot: SlotId) -> Result<()> {
         // can't remove a thing which does not exist
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
@@ -142,13 +142,12 @@ impl Page {
         Ok(())
     }
 
-    pub(crate) fn get_record(&self, slot: SlotId) -> Result<&[u8]> {
+    pub(crate) fn slot_bytes(&self, slot: SlotId) -> Result<&[u8]> {
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
         }
 
         let (offset, len) = self.read_slot(slot);
-        // offset 0 lands inside the header, so it can never be a live record
         if offset == 0 {
             return Err(Error::SlotDeleted(slot));
         }
@@ -156,7 +155,7 @@ impl Page {
         Ok(self.read_bytes(offset as usize, len as usize))
     }
 
-    pub(crate) fn get_record_mut(&mut self, slot: SlotId) -> Result<&mut [u8]> {
+    pub(crate) fn slot_bytes_mut(&mut self, slot: SlotId) -> Result<&mut [u8]> {
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
         }
@@ -169,7 +168,7 @@ impl Page {
         Ok(self.bytes_mut(offset as usize, len as usize))
     }
 
-    pub(crate) fn delete_record(&mut self, slot: SlotId) -> Result<()> {
+    pub(crate) fn tombstone_slot(&mut self, slot: SlotId) -> Result<()> {
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
         }
@@ -179,7 +178,7 @@ impl Page {
             return Err(Error::SlotDeleted(slot));
         }
 
-        // tombstone only: the record bytes stay put until compaction reclaims them
+        // tombstone only: the slot bytes stay put until compaction reclaims them
         self.write_slot(slot, 0, 0);
         Ok(())
     }

@@ -57,28 +57,28 @@ impl Page {
     }
 
     pub(crate) fn leaf_key(&self, slot: SlotId) -> Result<&[u8]> {
-        let entry = self.get_record(slot)?;
+        let entry = self.slot_bytes(slot)?;
         Ok(&entry[RID_SIZE..])
     }
 
     // where the record actually lives
     pub(crate) fn leaf_record_id(&self, slot: SlotId) -> Result<RecordId> {
-        let entry = self.get_record(slot)?;
+        let entry = self.slot_bytes(slot)?;
         Ok(RecordId::from_bytes(&entry[..RID_SIZE]))
     }
 
     pub(crate) fn set_leaf_record_id(&mut self, slot: SlotId, rid: RecordId) -> Result<()> {
-        let entry = self.get_record_mut(slot)?;
+        let entry = self.slot_bytes_mut(slot)?;
         entry[..RID_SIZE].copy_from_slice(&rid.to_bytes());
         Ok(())
     }
 
     pub(crate) fn internal_key(&self, slot: SlotId) -> Result<&[u8]> {
-        let entry = self.get_record(slot)?;
+        let entry = self.slot_bytes(slot)?;
         Ok(&entry[CHILD_SIZE..])
     }
     pub(crate) fn internal_child(&self, slot: SlotId) -> Result<PageId> {
-        let entry = self.get_record(slot)?;
+        let entry = self.slot_bytes(slot)?;
         Ok(PageId(u64::from_le_bytes(
             entry[..CHILD_SIZE].try_into().unwrap(),
         )))

@@ -23,8 +23,8 @@ impl BTree {
             let (_meta_id, meta_frame) = pool.new_page()?; // page 0
             let (root_id, root_frame) = pool.new_page()?; // page 1
 
-            pool.page_mut(root_frame).init_leaf();
-            pool.page_mut(meta_frame).init_meta(root_id);
+            pool.page_for_write(root_frame).init_leaf();
+            pool.page_for_write(meta_frame).init_meta(root_id);
 
             pool.unpin(root_frame)?;
             pool.unpin(meta_frame)?;
@@ -51,7 +51,7 @@ impl BTree {
 
     fn set_root(&mut self, root: PageId) -> Result<()> {
         let frame = self.pool.fetch_page(META_PAGE_ID)?;
-        self.pool.page_mut(frame).set_root_page_id(root);
+        self.pool.page_for_write(frame).set_root_page_id(root);
         self.pool.unpin(frame)?;
         Ok(())
     }
@@ -76,10 +76,12 @@ impl BTree {
         let (found, slot) = self.pool.page(frame).search_slot(key)?;
 
         let result = if found {
-            self.pool.page_mut(frame).set_leaf_record_id(slot, record)
+            self.pool
+                .page_for_write(frame)
+                .set_leaf_record_id(slot, record)
         } else {
             let entry = encode_leaf_entry(record, key);
-            self.pool.page_mut(frame).insert_record_at(slot, &entry)
+            self.pool.page_for_write(frame).insert_slot_at(slot, &entry)
         };
         self.pool.unpin(frame)?;
         result

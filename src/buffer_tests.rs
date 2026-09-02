@@ -25,7 +25,7 @@ fn a_written_page_reads_back_through_the_pool() {
     let mut pool = BufferPool::open(&path, 4).unwrap();
 
     let (page_id, frame_id) = pool.new_page().unwrap();
-    pool.page_mut(frame_id).write_u64(0, 0xCAFE);
+    pool.page_for_write(frame_id).write_u64(0, 0xCAFE);
     pool.unpin(frame_id).unwrap();
 
     let again = pool.fetch_page(page_id).unwrap();
@@ -50,7 +50,7 @@ fn a_dirty_page_survives_eviction() {
     let mut pool = BufferPool::open(&path, 2).unwrap();
 
     let (first, frame_id) = pool.new_page().unwrap();
-    pool.page_mut(frame_id).write_u64(0, 42);
+    pool.page_for_write(frame_id).write_u64(0, 42);
     pool.unpin(frame_id).unwrap();
 
     for _ in 0..2 {
@@ -70,7 +70,7 @@ fn a_new_page_never_inherits_the_old_frames_bytes() {
     let mut pool = BufferPool::open(&path, 1).unwrap();
 
     let (_, frame_id) = pool.new_page().unwrap();
-    pool.page_mut(frame_id).write_u64(0, 0xFFFF);
+    pool.page_for_write(frame_id).write_u64(0, 0xFFFF);
     pool.unpin(frame_id).unwrap();
 
     let (_, frame_id) = pool.new_page().unwrap();
@@ -136,7 +136,7 @@ fn flush_all_puts_everything_on_disk() {
     let page_id = {
         let mut pool = BufferPool::open(&path, 4).unwrap();
         let (page_id, frame_id) = pool.new_page().unwrap();
-        pool.page_mut(frame_id).write_u64(0, 0xDEAD_BEEF);
+        pool.page_for_write(frame_id).write_u64(0, 0xDEAD_BEEF);
         pool.unpin(frame_id).unwrap();
         pool.flush_all().unwrap();
         page_id
@@ -154,7 +154,7 @@ fn dropping_the_pool_without_flushing_loses_the_change() {
     let page_id = {
         let mut pool = BufferPool::open(&path, 4).unwrap();
         let (page_id, frame_id) = pool.new_page().unwrap();
-        pool.page_mut(frame_id).write_u64(0, 7);
+        pool.page_for_write(frame_id).write_u64(0, 7);
         pool.unpin(frame_id).unwrap();
         page_id
     };

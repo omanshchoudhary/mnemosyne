@@ -72,7 +72,7 @@ impl BufferPool {
         &self.frames[frame_id].page
     }
 
-    pub fn page_mut(&mut self, frame_id: FrameId) -> &mut Page {
+    pub fn page_for_write(&mut self, frame_id: FrameId) -> &mut Page {
         self.frames[frame_id].is_dirty = true;
         &mut self.frames[frame_id].page
     }

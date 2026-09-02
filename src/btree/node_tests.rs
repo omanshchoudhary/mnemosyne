@@ -21,11 +21,11 @@ fn rid(page: u64, slot: SlotId) -> RecordId {
 
 // inserts an encoded pair and hands back the slot it landed in
 fn put_leaf(page: &mut Page, key: &[u8], record: RecordId) -> SlotId {
-    page.insert_record(&encode_leaf_entry(record, key)).unwrap()
+    page.append_slot(&encode_leaf_entry(record, key)).unwrap()
 }
 
 fn put_internal(page: &mut Page, child: PageId, key: &[u8]) -> SlotId {
-    page.insert_record(&encode_internal_entry(child, key))
+    page.append_slot(&encode_internal_entry(child, key))
         .unwrap()
 }
 
@@ -119,7 +119,7 @@ fn two_internal_entries_stay_separate() {
     );
 }
 
-// insert_record appends, so feeding sorted keys leaves the slot array sorted
+// append_slot appends, so feeding sorted keys leaves the slot array sorted
 fn leaf_with(keys: &[&[u8]]) -> Page {
     let mut page = leaf_page();
     for (i, key) in keys.iter().enumerate() {

@@ -114,6 +114,22 @@ mod tests {
         (dir, path)
     }
 
+    fn rid(page: u64, slot: u16) -> RecordId {
+        RecordId {
+            page: PageId(page),
+            slot,
+        }
+    }
+
+    // how many entries the root leaf is holding
+    fn root_slot_count(tree: &mut BTree) -> u16 {
+        let root = tree.root().unwrap();
+        let frame = tree.pool.fetch_page(root).unwrap();
+        let count = tree.pool.page(frame).slot_count();
+        tree.pool.unpin(frame).unwrap();
+        count
+    }
+
     #[test]
     fn a_fresh_file_gets_a_meta_page_and_an_empty_root_leaf() {
         let (_dir, path) = temp_db();
@@ -194,5 +210,129 @@ mod tests {
             let (_, frame) = tree.pool.new_page().unwrap();
             tree.pool.unpin(frame).unwrap();
         }
+    }
+
+    #[test]
+    fn a_key_comes_back_after_being_inserted() {
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        tree.insert(b"apple", rid(57, 3)).unwrap();
+
+        assert_eq!(tree.lookup(b"apple").unwrap(), Some(rid(57, 3)));
+    }
+
+    #[test]
+    fn a_key_that_was_never_inserted_is_none() {
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        // empty tree, and a tree holding a neighbour on either side
+        assert_eq!(tree.lookup(b"nothing").unwrap(), None);
+
+        tree.insert(b"b", rid(1, 0)).unwrap();
+        assert_eq!(tree.lookup(b"a").unwrap(), None);
+        assert_eq!(tree.lookup(b"c").unwrap(), None);
+    }
+
+    #[test]
+    fn keys_inserted_out_of_order_all_come_back() {
+        // the leaf must end up sorted however they arrive, or search misses
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        let keys: [&[u8]; 7] = [b"m", b"c", b"t", b"a", b"z", b"f", b"q"];
+        for (i, key) in keys.iter().enumerate() {
+            tree.insert(key, rid(9, i as u16)).unwrap();
+        }
+
+        for (i, key) in keys.iter().enumerate() {
+            assert_eq!(tree.lookup(key).unwrap(), Some(rid(9, i as u16)));
+        }
+        assert_eq!(root_slot_count(&mut tree), 7);
+    }
+
+    #[test]
+    fn inserting_the_same_key_twice_overwrites_it() {
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        tree.insert(b"key", rid(1, 1)).unwrap();
+        tree.insert(b"key", rid(2, 2)).unwrap();
+
+        assert_eq!(tree.lookup(b"key").unwrap(), Some(rid(2, 2)));
+        // an overwrite is an edit, not a second entry
+        assert_eq!(root_slot_count(&mut tree), 1);
+    }
+
+    #[test]
+    fn an_overwrite_leaves_its_neighbours_alone() {
+        // the rewrite is 10 bytes inside one entry, so nothing else can move
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        tree.insert(b"a", rid(1, 0)).unwrap();
+        tree.insert(b"b", rid(2, 0)).unwrap();
+        tree.insert(b"c", rid(3, 0)).unwrap();
+
+        tree.insert(b"b", rid(99, 9)).unwrap();
+
+        assert_eq!(tree.lookup(b"a").unwrap(), Some(rid(1, 0)));
+        assert_eq!(tree.lookup(b"b").unwrap(), Some(rid(99, 9)));
+        assert_eq!(tree.lookup(b"c").unwrap(), Some(rid(3, 0)));
+        assert_eq!(root_slot_count(&mut tree), 3);
+    }
+
+    #[test]
+    fn inserted_keys_survive_a_reopen() {
+        let (_dir, path) = temp_db();
+        {
+            let mut tree = BTree::open(&path, FRAMES).unwrap();
+            tree.insert(b"persisted", rid(4, 2)).unwrap();
+            tree.pool.flush_all().unwrap();
+        }
+
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+        assert_eq!(tree.lookup(b"persisted").unwrap(), Some(rid(4, 2)));
+    }
+
+    #[test]
+    fn insert_leaves_no_frame_pinned() {
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, 3).unwrap();
+
+        // more inserts than frames, so a leaked pin per insert fills the pool
+        for i in 0..20u16 {
+            tree.insert(format!("key{i:03}").as_bytes(), rid(1, i))
+                .unwrap();
+        }
+
+        assert_eq!(tree.lookup(b"key019").unwrap(), Some(rid(1, 19)));
+    }
+
+    #[test]
+    fn filling_the_root_leaf_reports_page_full() {
+        // splitting is not implemented yet, so this is the current boundary
+        let (_dir, path) = temp_db();
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+        let mut inserted = 0u16;
+        loop {
+            let key = format!("{inserted:04}");
+            match tree.insert(key.as_bytes(), rid(1, inserted)) {
+                Ok(()) => inserted += 1,
+                Err(Error::PageFull { .. }) => break,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+
+        assert!(inserted > 100, "expected a full leaf, got {inserted}");
+        // everything that did fit is still findable
+        assert_eq!(tree.lookup(b"0000").unwrap(), Some(rid(1, 0)));
+        assert_eq!(
+            tree.lookup(format!("{:04}", inserted - 1).as_bytes())
+                .unwrap(),
+            Some(rid(1, inserted - 1))
+        );
     }
 }

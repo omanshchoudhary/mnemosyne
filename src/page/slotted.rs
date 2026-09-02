@@ -18,7 +18,7 @@ const OFF_RESERVED: usize = 22; // 2 bytes spare
 const OFF_LINK: usize = 24; // 8 bytes for link(PageID)
 pub(crate) const HEADER_SIZE: usize = 32;
 
-const SLOT_SIZE: usize = 4; // offset (2 bytes) + length (2 bytes)
+pub(crate) const SLOT_SIZE: usize = 4; // offset (2 bytes) + length (2 bytes)
 
 const PAGE_TYPE_SLOTTED: u8 = 1;
 

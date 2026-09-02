@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 use crate::error::Result;
-use crate::page::{Page, PageId, RecordId, slotted::SlotId};
+use crate::page::{
+    Page, PageId, RecordId,
+    slotted::{SLOT_SIZE, SlotId},
+};
 
 const PAGE_TYPE_LEAF: u8 = 2;
 const PAGE_TYPE_INTERNAL: u8 = 3;
@@ -77,6 +80,12 @@ impl Page {
         let entry = self.slot_bytes(slot)?;
         Ok(&entry[CHILD_SIZE..])
     }
+    pub(crate) fn set_internal_child(&mut self, slot: SlotId, child: PageId) -> Result<()> {
+        let entry = self.slot_bytes_mut(slot)?;
+        entry[..CHILD_SIZE].copy_from_slice(&child.0.to_le_bytes());
+        Ok(())
+    }
+
     pub(crate) fn internal_child(&self, slot: SlotId) -> Result<PageId> {
         let entry = self.slot_bytes(slot)?;
         Ok(PageId(u64::from_le_bytes(
@@ -127,6 +136,27 @@ impl Page {
 
         self.internal_child(child_slot)
     }
+
+    // every entry in the page in slot order
+    pub(crate) fn entries(&self) -> Result<Vec<Vec<u8>>> {
+        (0..self.slot_count())
+            .map(|slot| self.slot_bytes(slot).map(|r| r.to_vec()))
+            .collect()
+    }
+}
+
+pub(crate) fn split_point(entries: &[Vec<u8>]) -> usize {
+    let total: usize = entries.iter().map(|e| e.len() + SLOT_SIZE).sum(); // sum of key length, record id length and slot length
+    let mut running = 0;
+
+    for (i, entry) in entries.iter().enumerate() {
+        running += entry.len() + SLOT_SIZE;
+
+        if running * 2 > total {
+            return i.clamp(1, entries.len() - 1); // entries following including this index goes into right page
+        }
+    }
+    entries.len() - 1
 }
 
 // converting rid+key as one blob to enter into a slotted page
@@ -139,7 +169,19 @@ pub(crate) fn encode_leaf_entry(rid: RecordId, key: &[u8]) -> Vec<u8> {
 }
 
 // converting child+key as one blob to enter into a slotted page
-fn encode_internal_entry(child: PageId, key: &[u8]) -> Vec<u8> {
+pub(crate) fn internal_entry_child(entry: &[u8]) -> PageId {
+    PageId(u64::from_le_bytes(entry[..CHILD_SIZE].try_into().unwrap()))
+}
+
+pub(crate) fn internal_entry_key(entry: &[u8]) -> &[u8] {
+    &entry[CHILD_SIZE..]
+}
+
+pub(crate) fn set_entry_child(entry: &mut [u8], child: PageId) {
+    entry[..CHILD_SIZE].copy_from_slice(&child.0.to_le_bytes());
+}
+
+pub(crate) fn encode_internal_entry(child: PageId, key: &[u8]) -> Vec<u8> {
     let mut entry: Vec<u8> = Vec::with_capacity(CHILD_SIZE + key.len());
     entry.extend_from_slice(&child.0.to_le_bytes());
     entry.extend_from_slice(key);

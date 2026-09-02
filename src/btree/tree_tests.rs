@@ -206,28 +206,132 @@ fn insert_leaves_no_frame_pinned() {
     assert_eq!(tree.lookup(b"key019").unwrap(), Some(rid(1, 19)));
 }
 
+// the leaf that holds the smallest keys, found by descending on an empty key
+fn leftmost_leaf(tree: &mut BTree) -> PageId {
+    let mut page_id = tree.root().unwrap();
+    loop {
+        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let page = tree.pool.page(frame);
+        if page.is_leaf() {
+            tree.pool.unpin(frame).unwrap();
+            return page_id;
+        }
+        let child = page.child_for_key(b"").unwrap();
+        tree.pool.unpin(frame).unwrap();
+        page_id = child;
+    }
+}
+
+fn key_of(i: u16) -> Vec<u8> {
+    format!("{i:04}").into_bytes()
+}
+
 #[test]
-fn filling_the_root_leaf_reports_page_full() {
-    // splitting is not implemented yet, so this is the current boundary
+fn the_tree_grows_past_a_single_page() {
     let (_dir, path) = temp_db();
     let mut tree = BTree::open(&path, FRAMES).unwrap();
 
-    let mut inserted = 0u16;
-    loop {
-        let key = format!("{inserted:04}");
-        match tree.insert(key.as_bytes(), rid(1, inserted)) {
-            Ok(()) => inserted += 1,
-            Err(Error::PageFull { .. }) => break,
-            Err(e) => panic!("unexpected error: {e}"),
-        }
+    for i in 0..1000u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
     }
 
-    assert!(inserted > 100, "expected a full leaf, got {inserted}");
-    // everything that did fit is still findable
-    assert_eq!(tree.lookup(b"0000").unwrap(), Some(rid(1, 0)));
-    assert_eq!(
-        tree.lookup(format!("{:04}", inserted - 1).as_bytes())
-            .unwrap(),
-        Some(rid(1, inserted - 1))
-    );
+    // the root started life as a leaf, so an internal root proves it split
+    let root = tree.root().unwrap();
+    let frame = tree.pool.fetch_page(root).unwrap();
+    assert!(tree.pool.page(frame).is_internal());
+    tree.pool.unpin(frame).unwrap();
+
+    assert!(root != PageId(1), "the root pointer never moved");
+    assert!(tree.pool.page_count().unwrap() > 2);
+
+    for i in 0..1000u16 {
+        assert_eq!(tree.lookup(&key_of(i)).unwrap(), Some(rid(1, i)));
+    }
+}
+
+#[test]
+fn scrambled_inserts_are_all_findable_after_splits() {
+    // ascending keys always split the same way, this exercises the others
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    let mut order: Vec<u16> = (0..800).collect();
+    let mut seed = 0x2545_F491u32;
+    for i in (1..order.len()).rev() {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        order.swap(i, seed as usize % (i + 1));
+    }
+
+    for &i in &order {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+
+    for i in 0..800u16 {
+        assert_eq!(tree.lookup(&key_of(i)).unwrap(), Some(rid(1, i)));
+    }
+    assert_eq!(tree.lookup(b"9999").unwrap(), None);
+}
+
+#[test]
+fn the_leaf_chain_holds_every_key_in_order() {
+    // walking next_leaf must visit every key exactly once, in sorted order
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    let mut leaf = Some(leftmost_leaf(&mut tree));
+    let mut leaves = 0;
+
+    while let Some(page_id) = leaf {
+        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let page = tree.pool.page(frame);
+        for slot in 0..page.slot_count() {
+            seen.push(page.leaf_key(slot).unwrap().to_vec());
+        }
+        leaf = page.next_leaf();
+        tree.pool.unpin(frame).unwrap();
+        leaves += 1;
+    }
+
+    assert!(leaves > 1, "expected several leaves, got {leaves}");
+    assert_eq!(seen.len(), 600);
+    let expected: Vec<Vec<u8>> = (0..600u16).map(key_of).collect();
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn a_split_tree_survives_a_reopen() {
+    let (_dir, path) = temp_db();
+    {
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+        for i in 0..500u16 {
+            tree.insert(&key_of(i), rid(1, i)).unwrap();
+        }
+        tree.pool.flush_all().unwrap();
+    }
+
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+    for i in 0..500u16 {
+        assert_eq!(tree.lookup(&key_of(i)).unwrap(), Some(rid(1, i)));
+    }
+}
+
+#[test]
+fn overwriting_after_a_split_finds_the_right_leaf() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..500u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    // a key in the middle, so the descent has to pick a child correctly
+    tree.insert(&key_of(250), rid(99, 9)).unwrap();
+
+    assert_eq!(tree.lookup(&key_of(250)).unwrap(), Some(rid(99, 9)));
+    assert_eq!(tree.lookup(&key_of(249)).unwrap(), Some(rid(1, 249)));
+    assert_eq!(tree.lookup(&key_of(251)).unwrap(), Some(rid(1, 251)));
 }

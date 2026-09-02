@@ -148,6 +148,7 @@ impl Page {
         }
 
         let (offset, len) = self.read_slot(slot);
+        // offset 0 lands inside the header, so it can never be a live slot
         if offset == 0 {
             return Err(Error::SlotDeleted(slot));
         }

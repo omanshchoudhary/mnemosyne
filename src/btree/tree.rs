@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::btree::node::encode_leaf_entry;
 use crate::buffer::{BufferPool, FrameId};
 use crate::error::{Error, Result};
 use crate::page::{PageId, RecordId};
@@ -43,7 +44,7 @@ impl BTree {
 
     fn root(&mut self) -> Result<PageId> {
         let frame = self.pool.fetch_page(META_PAGE_ID)?;
-        let root =  self.pool.page(frame).root_page_id();
+        let root = self.pool.page(frame).root_page_id();
         self.pool.unpin(frame)?;
         Ok(root)
     }
@@ -56,18 +57,32 @@ impl BTree {
     }
 
     fn find_leaf(&mut self, key: &[u8]) -> Result<FrameId> {
-        
         let mut page_id = self.root()?;
 
         loop {
             let frame = self.pool.fetch_page(page_id)?;
             if self.pool.page(frame).is_leaf() {
-                return Ok(frame);          // still pinned, on purpose
+                return Ok(frame); // still pinned, on purpose
             }
             let child = self.pool.page(frame).child_for_key(key)?;
             self.pool.unpin(frame)?;
             page_id = child;
         }
+    }
+
+    pub fn insert(&mut self, key: &[u8], record: RecordId) -> Result<()> {
+        let frame = self.find_leaf(key)?;
+
+        let (found, slot) = self.pool.page(frame).search_slot(key)?;
+
+        let result = if found {
+            self.pool.page_mut(frame).set_leaf_record_id(slot, record)
+        } else {
+            let entry = encode_leaf_entry(record, key);
+            self.pool.page_mut(frame).insert_record_at(slot, &entry)
+        };
+        self.pool.unpin(frame)?;
+        result
     }
 
     pub fn lookup(&mut self, key: &[u8]) -> Result<Option<RecordId>> {

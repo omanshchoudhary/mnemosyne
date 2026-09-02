@@ -108,6 +108,10 @@ impl Page {
         &self.data[offset..offset + len]
     }
 
+    pub(crate) fn bytes_mut(&mut self, offset: usize, len: usize) -> &mut [u8] {
+        &mut self.data[offset..offset + len]
+    }
+
     pub(crate) fn write_bytes(&mut self, offset: usize, src: &[u8]) {
         self.data[offset..offset + src.len()].copy_from_slice(src);
     }

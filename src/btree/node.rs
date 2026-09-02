@@ -66,6 +66,13 @@ impl Page {
         let entry = self.get_record(slot)?;
         Ok(RecordId::from_bytes(&entry[..RID_SIZE]))
     }
+
+    pub(crate) fn set_leaf_record_id(&mut self, slot: SlotId, rid: RecordId) -> Result<()> {
+        let entry = self.get_record_mut(slot)?;
+        entry[..RID_SIZE].copy_from_slice(&rid.to_bytes());
+        Ok(())
+    }
+
     pub(crate) fn internal_key(&self, slot: SlotId) -> Result<&[u8]> {
         let entry = self.get_record(slot)?;
         Ok(&entry[CHILD_SIZE..])
@@ -123,7 +130,7 @@ impl Page {
 }
 
 // converting rid+key as one blob to enter into a slotted page
-fn encode_leaf_entry(rid: RecordId, key: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_leaf_entry(rid: RecordId, key: &[u8]) -> Vec<u8> {
     let mut entry: Vec<u8> = Vec::with_capacity(RID_SIZE + key.len());
     entry.extend_from_slice(&rid.to_bytes());
     entry.extend_from_slice(key);

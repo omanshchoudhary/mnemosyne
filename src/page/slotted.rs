@@ -91,7 +91,6 @@ impl Page {
         Ok(new_slot)
     }
 
-
     pub(crate) fn insert_record_at(&mut self, slot: SlotId, record: &[u8]) -> Result<()> {
         if slot > self.slot_count() {
             return Err(Error::NoSuchSlot(slot));
@@ -121,7 +120,6 @@ impl Page {
 
         Ok(())
     }
-
 
     pub(crate) fn remove_record_at(&mut self, slot: SlotId) -> Result<()> {
         // can't remove a thing which does not exist
@@ -157,6 +155,20 @@ impl Page {
 
         Ok(self.read_bytes(offset as usize, len as usize))
     }
+
+    pub(crate) fn get_record_mut(&mut self, slot: SlotId) -> Result<&mut [u8]> {
+        if slot >= self.slot_count() {
+            return Err(Error::NoSuchSlot(slot));
+        }
+
+        let (offset, len) = self.read_slot(slot);
+        if offset == 0 {
+            return Err(Error::SlotDeleted(slot));
+        }
+
+        Ok(self.bytes_mut(offset as usize, len as usize))
+    }
+
     pub(crate) fn delete_record(&mut self, slot: SlotId) -> Result<()> {
         if slot >= self.slot_count() {
             return Err(Error::NoSuchSlot(slot));

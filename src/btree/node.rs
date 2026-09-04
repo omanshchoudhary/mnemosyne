@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use crate::page::{
-    Page, PageId, RecordId,
-    slotted::{SLOT_SIZE, SlotId},
+    PAGE_SIZE, Page, PageId, RecordId,
+    slotted::{HEADER_SIZE, SLOT_SIZE, SlotId},
 };
 
 const PAGE_TYPE_LEAF: u8 = 2;
@@ -11,6 +11,9 @@ const PAGE_TYPE_INTERNAL: u8 = 3;
 
 const RID_SIZE: usize = RecordId::SIZE;
 const CHILD_SIZE: usize = 8;
+
+// what the slot array and records get to share
+const USABLE: usize = PAGE_SIZE - HEADER_SIZE;
 
 // Page 0 is the meta page
 const NO_PAGE: u64 = 0;
@@ -123,18 +126,34 @@ impl Page {
         Ok((false, low as SlotId))
     }
 
-    pub(crate) fn child_for_key(&self, key: &[u8]) -> Result<PageId> {
+    // which of the n+1 children bounds this key
+    pub(crate) fn child_slot_for_key(&self, key: &[u8]) -> Result<SlotId> {
         let (found, slot) = self.search_slot(key)?;
+        Ok(if found { slot + 1 } else { slot })
+    }
 
-        let child_slot = if found { slot + 1 } else { slot };
-
-        if child_slot == self.slot_count() {
+    // the n+1th child has no slot of its own, it lives in the link
+    pub(crate) fn child_at(&self, slot: SlotId) -> Result<PageId> {
+        if slot == self.slot_count() {
             return Ok(self
                 .rightmost_child()
                 .expect("internal node without a rightmost child"));
         }
 
-        self.internal_child(child_slot)
+        self.internal_child(slot)
+    }
+
+    pub(crate) fn child_for_key(&self, key: &[u8]) -> Result<PageId> {
+        self.child_at(self.child_slot_for_key(key)?)
+    }
+
+    // slots plus records with holes
+    pub(crate) fn live_bytes(&self) -> usize {
+        USABLE - self.free_space() - self.frag_space()
+    }
+
+    pub(crate) fn is_underfull(&self) -> bool {
+        self.live_bytes() * 2 < USABLE
     }
 
     // every entry in the page in slot order
@@ -157,6 +176,12 @@ pub(crate) fn split_point(entries: &[Vec<u8>]) -> usize {
         }
     }
     entries.len() - 1
+}
+
+// an internal merge also pulls the separator down out of the parent
+pub(crate) fn merged_fits(incoming: usize, available: usize, separator: Option<&[u8]>) -> bool {
+    let pulled_down = separator.map_or(0, |key| CHILD_SIZE + key.len() + SLOT_SIZE);
+    incoming + pulled_down <= available
 }
 
 // converting rid+key as one blob to enter into a slotted page

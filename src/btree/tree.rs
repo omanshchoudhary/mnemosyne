@@ -245,6 +245,38 @@ impl BTree {
         self.pool.unpin(frame)?;
         Ok(record)
     }
+
+    // every pair from start up to but not including end
+    pub fn scan(&mut self, start: &[u8], end: &[u8]) -> Result<Vec<(Vec<u8>, RecordId)>> {
+        let mut frame = self.find_leaf(start)?;
+        let (_, mut slot) = self.pool.page(frame).search_slot(start)?;
+        let mut out = Vec::new();
+
+        loop {
+            while slot < self.pool.page(frame).slot_count() {
+                if self.pool.page(frame).leaf_key(slot)? >= end {
+                    self.pool.unpin(frame)?;
+                    return Ok(out);
+                }
+
+                let key = self.pool.page(frame).leaf_key(slot)?.to_vec();
+                let rid = self.pool.page(frame).leaf_record_id(slot)?;
+                out.push((key, rid));
+                slot += 1;
+            }
+            let next = self.pool.page(frame).next_leaf();
+            self.pool.unpin(frame)?;
+
+            match next {
+                Some(page_id) => {
+                    frame = self.pool.fetch_page(page_id)?;
+                    slot = 0;
+                }
+                None => break,
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

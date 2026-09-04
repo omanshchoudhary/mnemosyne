@@ -184,6 +184,48 @@ impl Page {
         Ok(())
     }
 
+    pub(crate) fn compact(&mut self) {
+        let records: Vec<Option<Vec<u8>>> = (0..self.slot_count())
+            .map(|slot| {
+                let (offset, len) = self.read_slot(slot);
+                if offset == 0 {
+                    None // tombstone, it keeps its slot but owns no bytes
+                } else {
+                    Some(self.read_bytes(offset as usize, len as usize).to_vec())
+                }
+            })
+            .collect();
+
+        let page_type = self.page_type();
+        let link = self.link();
+        self.init_slotted();
+        self.set_page_type(page_type);
+        self.set_link(link);
+
+        let mut free_ptr = PAGE_SIZE;
+        let mut free_bytes = PAGE_SIZE - HEADER_SIZE;
+
+        for (slot, record) in records.iter().enumerate() {
+            let slot = slot as SlotId;
+            match record {
+                Some(bytes) => {
+                    free_ptr -= bytes.len();
+                    self.write_bytes(free_ptr, bytes);
+                    self.write_slot(slot, free_ptr as u16, bytes.len() as u16);
+                    free_bytes -= bytes.len() + SLOT_SIZE;
+                }
+                None => {
+                    self.write_slot(slot, 0, 0);
+                    free_bytes -= SLOT_SIZE;
+                }
+            }
+        }
+
+        self.write_u16(OFF_FREE_PTR, free_ptr as u16);
+        self.write_u16(OFF_FREE_BYTES, free_bytes as u16);
+        self.write_u16(OFF_SLOT_COUNT, records.len() as SlotId);
+    }
+
     fn slot_entry_pos(slot: SlotId) -> usize {
         HEADER_SIZE + slot as usize * SLOT_SIZE
     }

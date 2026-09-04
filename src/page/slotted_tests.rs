@@ -386,3 +386,73 @@ fn insert_after_remove_keeps_the_order() {
 
     assert_eq!(records(&page), vec![b"a", b"b", b"e"]);
 }
+
+#[test]
+fn compacting_hands_back_the_stranded_bytes() {
+    let mut page = page_with(&[b"aaaa", b"bbbb", b"cccc", b"dddd"]);
+
+    page.remove_slot_at(1).unwrap();
+    page.remove_slot_at(1).unwrap();
+    assert_eq!(page.frag_space(), 8);
+
+    let before = page.free_space();
+    page.compact();
+
+    assert_eq!(page.frag_space(), 0);
+    assert_eq!(page.free_space(), before + 8);
+    assert_eq!(page.free_space(), derived_free_space(&page));
+}
+
+#[test]
+fn compacting_leaves_the_records_alone() {
+    let mut page = page_with(&[b"first", b"second", b"third", b"fourth"]);
+
+    page.remove_slot_at(0).unwrap();
+    page.compact();
+
+    assert_eq!(
+        records(&page),
+        vec![b"second".to_vec(), b"third".to_vec(), b"fourth".to_vec()]
+    );
+}
+
+#[test]
+fn compacting_an_untouched_page_changes_nothing() {
+    let mut page = page_with(&[b"a", b"bb", b"ccc"]);
+    let before = page.free_space();
+
+    page.compact();
+
+    assert_eq!(
+        records(&page),
+        vec![b"a".to_vec(), b"bb".to_vec(), b"ccc".to_vec()]
+    );
+    assert_eq!(page.free_space(), before);
+}
+
+#[test]
+fn compacting_keeps_the_page_type_and_link() {
+    let mut page = page_with(&[b"one", b"two"]);
+    page.set_page_type(7);
+    page.set_link(42);
+
+    page.remove_slot_at(0).unwrap();
+    page.compact();
+
+    assert_eq!(page.page_type(), 7);
+    assert_eq!(page.link(), 42);
+}
+
+#[test]
+fn compacting_keeps_tombstones_in_place() {
+    // heap pages hand out SlotIds, so a tombstone cannot lose its slot
+    let mut page = page_with(&[b"keep", b"gone", b"also keep"]);
+
+    page.tombstone_slot(1).unwrap();
+    page.compact();
+
+    assert_eq!(page.slot_count(), 3);
+    assert_eq!(page.slot_bytes(0).unwrap(), b"keep");
+    assert!(matches!(page.slot_bytes(1), Err(Error::SlotDeleted(1))));
+    assert_eq!(page.slot_bytes(2).unwrap(), b"also keep");
+}

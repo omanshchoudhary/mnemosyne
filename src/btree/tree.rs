@@ -4,10 +4,11 @@ use std::path::Path;
 
 use crate::btree::node::{
     encode_internal_entry, encode_leaf_entry, internal_entry_child, internal_entry_key,
-    set_entry_child, split_point,
+    merged_fits, set_entry_child, split_point,
 };
 use crate::buffer::{BufferPool, FrameId};
 use crate::error::{Error, Result};
+use crate::page::slotted::SlotId;
 use crate::page::{PageId, RecordId};
 
 // 0 reserved for MetaPage
@@ -230,6 +231,153 @@ impl BTree {
                 Err(e)
             }
         }
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> Result<bool> {
+        let root = self.root()?;
+        let (removed, _) = self.delete_from(root, key)?;
+
+        let frame = self.pool.fetch_page(root)?;
+        let collapse = !self.pool.page(frame).is_leaf() && self.pool.page(frame).slot_count() == 0;
+        let survivor = if collapse {
+            self.pool.page(frame).rightmost_child()
+        } else {
+            None
+        };
+        self.pool.unpin(frame)?;
+
+        if let Some(child) = survivor {
+            self.set_root(child)?;
+        }
+
+        Ok(removed)
+    }
+
+    fn delete_from(&mut self, page_id: PageId, key: &[u8]) -> Result<(bool, bool)> {
+        let frame = self.pool.fetch_page(page_id)?;
+
+        if !self.pool.page(frame).is_leaf() {
+            let child_slot = self.pool.page(frame).child_slot_for_key(key)?;
+            let child = self.pool.page(frame).child_at(child_slot)?;
+            self.pool.unpin(frame)?;
+
+            let (removed, underfull) = self.delete_from(child, key)?;
+
+            if !underfull {
+                return Ok((removed, false));
+            }
+
+            self.rebalance_child(page_id, child_slot)?;
+
+            let frame = self.pool.fetch_page(page_id)?;
+            let underfull = self.pool.page(frame).is_underfull();
+            self.pool.unpin(frame)?;
+
+            return Ok((removed, underfull));
+        }
+
+        let (found, slot) = self.pool.page(frame).search_slot(key)?;
+
+        if found {
+            self.pool.page_for_write(frame).remove_slot_at(slot)?;
+        }
+
+        let underfull = self.pool.page(frame).is_underfull();
+        self.pool.unpin(frame)?;
+
+        Ok((found, underfull))
+    }
+
+    fn merge_fits(&mut self, parent: PageId, left_slot: SlotId) -> Result<bool> {
+        let frame = self.pool.fetch_page(parent)?;
+        let left = self.pool.page(frame).child_at(left_slot)?;
+        let right = self.pool.page(frame).child_at(left_slot + 1)?;
+        let separator = self.pool.page(frame).internal_key(left_slot)?.to_vec();
+        self.pool.unpin(frame)?;
+
+        let frame = self.pool.fetch_page(left)?;
+        let is_leaf = self.pool.page(frame).is_leaf();
+        let available = self.pool.page(frame).free_space() + self.pool.page(frame).frag_space();
+        self.pool.unpin(frame)?;
+
+        let frame = self.pool.fetch_page(right)?;
+        let incoming = self.pool.page(frame).live_bytes();
+        self.pool.unpin(frame)?;
+
+        let separator = if is_leaf { None } else { Some(&separator[..]) };
+        Ok(merged_fits(incoming, available, separator))
+    }
+
+    fn rebalance_child(&mut self, parent: PageId, child_slot: SlotId) -> Result<()> {
+        let frame = self.pool.fetch_page(parent)?;
+        let slot_count = self.pool.page(frame).slot_count();
+        self.pool.unpin(frame)?;
+
+        let mut pairs = Vec::new();
+        if child_slot < slot_count {
+            pairs.push(child_slot);
+        }
+        if child_slot > 0 {
+            pairs.push(child_slot - 1);
+        }
+
+        for left_slot in pairs {
+            if self.merge_fits(parent, left_slot)? {
+                return self.merge_children(parent, left_slot);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn merge_children(&mut self, parent: PageId, left_slot: SlotId) -> Result<()> {
+        let frame = self.pool.fetch_page(parent)?;
+        let left = self.pool.page(frame).child_at(left_slot)?;
+        let right = self.pool.page(frame).child_at(left_slot + 1)?;
+        let separator = self.pool.page(frame).internal_key(left_slot)?.to_vec();
+        self.pool.unpin(frame)?;
+
+        let frame = self.pool.fetch_page(right)?;
+        let is_leaf = self.pool.page(frame).is_leaf();
+        let moved = self.pool.page(frame).entries()?;
+        let right_link = self.pool.page(frame).next_leaf();
+        self.pool.unpin(frame)?;
+
+        let frame = self.pool.fetch_page(left)?;
+        self.pool.page_for_write(frame).compact();
+        if !is_leaf {
+            let left_link = self
+                .pool
+                .page(frame)
+                .rightmost_child()
+                .expect("internal node without a rightmost child");
+            let pulled_down = encode_internal_entry(left_link, &separator);
+            self.pool.page_for_write(frame).append_slot(&pulled_down)?;
+        }
+        for entry in &moved {
+            self.pool.page_for_write(frame).append_slot(entry)?;
+        }
+        if is_leaf {
+            self.pool.page_for_write(frame).set_next_leaf(right_link);
+        } else {
+            self.pool
+                .page_for_write(frame)
+                .set_rightmost_child(right_link.expect("internal node without a rightmost child"));
+        }
+        self.pool.unpin(frame)?;
+
+        let frame = self.pool.fetch_page(parent)?;
+        self.pool.page_for_write(frame).remove_slot_at(left_slot)?;
+        if left_slot == self.pool.page(frame).slot_count() {
+            self.pool.page_for_write(frame).set_rightmost_child(left);
+        } else {
+            self.pool
+                .page_for_write(frame)
+                .set_internal_child(left_slot, left)?;
+        }
+        self.pool.unpin(frame)?;
+
+        Ok(())
     }
 
     pub fn lookup(&mut self, key: &[u8]) -> Result<Option<RecordId>> {

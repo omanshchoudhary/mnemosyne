@@ -321,6 +321,300 @@ fn a_split_tree_survives_a_reopen() {
 }
 
 #[test]
+fn deleting_a_key_removes_it() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    tree.insert(b"apple", rid(57, 3)).unwrap();
+
+    assert!(tree.delete(b"apple").unwrap());
+    assert_eq!(tree.lookup(b"apple").unwrap(), None);
+    assert_eq!(root_slot_count(&mut tree), 0);
+}
+
+#[test]
+fn deleting_a_key_that_is_not_there_is_false() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    // empty tree, and a tree holding a neighbour on either side
+    assert!(!tree.delete(b"nothing").unwrap());
+
+    tree.insert(b"b", rid(1, 0)).unwrap();
+    assert!(!tree.delete(b"a").unwrap());
+    assert!(!tree.delete(b"c").unwrap());
+    assert_eq!(root_slot_count(&mut tree), 1);
+}
+
+#[test]
+fn deleting_the_same_key_twice_reports_it_once() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    tree.insert(b"key", rid(1, 1)).unwrap();
+
+    assert!(tree.delete(b"key").unwrap());
+    assert!(!tree.delete(b"key").unwrap());
+}
+
+#[test]
+fn a_delete_leaves_its_neighbours_alone() {
+    // removal shifts the slots left, so the survivors must still be findable
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    tree.insert(b"a", rid(1, 0)).unwrap();
+    tree.insert(b"b", rid(2, 0)).unwrap();
+    tree.insert(b"c", rid(3, 0)).unwrap();
+
+    assert!(tree.delete(b"b").unwrap());
+
+    assert_eq!(tree.lookup(b"a").unwrap(), Some(rid(1, 0)));
+    assert_eq!(tree.lookup(b"b").unwrap(), None);
+    assert_eq!(tree.lookup(b"c").unwrap(), Some(rid(3, 0)));
+    assert_eq!(root_slot_count(&mut tree), 2);
+}
+
+#[test]
+fn a_deleted_key_can_be_inserted_again() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    tree.insert(b"key", rid(1, 1)).unwrap();
+    tree.delete(b"key").unwrap();
+    tree.insert(b"key", rid(2, 2)).unwrap();
+
+    assert_eq!(tree.lookup(b"key").unwrap(), Some(rid(2, 2)));
+    assert_eq!(root_slot_count(&mut tree), 1);
+}
+
+#[test]
+fn emptying_the_root_leaf_leaves_a_usable_tree() {
+    // an empty leaf root is a legal empty tree, not something to collapse
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..7u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    for i in 0..7u16 {
+        assert!(tree.delete(&key_of(i)).unwrap());
+    }
+
+    assert_eq!(root_slot_count(&mut tree), 0);
+    assert_eq!(tree.root().unwrap(), PageId(1));
+
+    let frame = tree.pool.fetch_page(PageId(1)).unwrap();
+    assert!(tree.pool.page(frame).is_leaf());
+    tree.pool.unpin(frame).unwrap();
+}
+
+#[test]
+fn a_delete_survives_a_reopen() {
+    let (_dir, path) = temp_db();
+    {
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+        tree.insert(b"gone", rid(4, 2)).unwrap();
+        tree.insert(b"kept", rid(5, 1)).unwrap();
+        tree.delete(b"gone").unwrap();
+        tree.pool.flush_all().unwrap();
+    }
+
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+    assert_eq!(tree.lookup(b"gone").unwrap(), None);
+    assert_eq!(tree.lookup(b"kept").unwrap(), Some(rid(5, 1)));
+}
+
+#[test]
+fn deleting_after_a_split_finds_the_right_leaf() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..500u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    // a key in the middle, so the descent has to pick a child correctly
+    assert!(tree.delete(&key_of(250)).unwrap());
+
+    assert_eq!(tree.lookup(&key_of(250)).unwrap(), None);
+    assert_eq!(tree.lookup(&key_of(249)).unwrap(), Some(rid(1, 249)));
+    assert_eq!(tree.lookup(&key_of(251)).unwrap(), Some(rid(1, 251)));
+}
+
+#[test]
+fn every_key_can_be_deleted_from_a_split_tree() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    for i in 0..600u16 {
+        assert!(tree.delete(&key_of(i)).unwrap(), "{i} was already gone");
+    }
+    for i in 0..600u16 {
+        assert_eq!(tree.lookup(&key_of(i)).unwrap(), None);
+    }
+}
+
+#[test]
+fn the_leaf_chain_stays_ordered_after_deletes() {
+    // deleting every other key must leave the chain sorted and gap free
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    for i in (0..600u16).step_by(2) {
+        tree.delete(&key_of(i)).unwrap();
+    }
+
+    let seen = tree.scan(b"", b"9999").unwrap();
+    let expected: Vec<Vec<u8>> = (1..600u16).step_by(2).map(key_of).collect();
+    assert_eq!(seen.len(), expected.len());
+    assert_eq!(
+        seen.into_iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        expected
+    );
+}
+
+fn leaf_count(tree: &mut BTree) -> usize {
+    let mut leaf = Some(leftmost_leaf(tree));
+    let mut leaves = 0;
+    while let Some(page_id) = leaf {
+        let frame = tree.pool.fetch_page(page_id).unwrap();
+        leaf = tree.pool.page(frame).next_leaf();
+        tree.pool.unpin(frame).unwrap();
+        leaves += 1;
+    }
+    leaves
+}
+
+fn depth(tree: &mut BTree) -> usize {
+    let mut page_id = tree.root().unwrap();
+    let mut levels = 1;
+    loop {
+        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let page = tree.pool.page(frame);
+        if page.is_leaf() {
+            tree.pool.unpin(frame).unwrap();
+            return levels;
+        }
+        let child = page.child_for_key(b"").unwrap();
+        tree.pool.unpin(frame).unwrap();
+        page_id = child;
+        levels += 1;
+    }
+}
+
+#[test]
+fn deleting_most_of_the_keys_merges_the_leaves() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    let before = leaf_count(&mut tree);
+
+    for i in 0..570u16 {
+        tree.delete(&key_of(i)).unwrap();
+    }
+    let after = leaf_count(&mut tree);
+
+    assert!(before > 1, "expected several leaves, got {before}");
+    assert!(
+        after < before,
+        "leaves never merged, {before} before and {after} after"
+    );
+
+    for i in 570..600u16 {
+        assert_eq!(tree.lookup(&key_of(i)).unwrap(), Some(rid(1, i)));
+    }
+}
+
+#[test]
+fn emptying_a_split_tree_shrinks_it_back_to_one_leaf() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    assert!(depth(&mut tree) > 1);
+
+    for i in 0..600u16 {
+        tree.delete(&key_of(i)).unwrap();
+    }
+
+    // every merge collapses a level, so the root has to be a leaf again
+    assert_eq!(depth(&mut tree), 1);
+    assert_eq!(leaf_count(&mut tree), 1);
+    assert_eq!(root_slot_count(&mut tree), 0);
+}
+
+#[test]
+fn a_merged_tree_still_scans_in_order() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    for i in 0..300u16 {
+        tree.delete(&key_of(i)).unwrap();
+    }
+
+    let seen: Vec<Vec<u8>> = tree
+        .scan(b"", b"9999")
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let expected: Vec<Vec<u8>> = (300..600u16).map(key_of).collect();
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn merging_survives_a_reopen() {
+    let (_dir, path) = temp_db();
+    {
+        let mut tree = BTree::open(&path, FRAMES).unwrap();
+        for i in 0..600u16 {
+            tree.insert(&key_of(i), rid(1, i)).unwrap();
+        }
+        for i in 0..580u16 {
+            tree.delete(&key_of(i)).unwrap();
+        }
+        tree.pool.flush_all().unwrap();
+    }
+
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+    for i in 580..600u16 {
+        assert_eq!(tree.lookup(&key_of(i)).unwrap(), Some(rid(1, i)));
+    }
+    assert_eq!(tree.lookup(&key_of(0)).unwrap(), None);
+}
+
+#[test]
+fn delete_leaves_no_frame_pinned() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, 3).unwrap();
+
+    // more deletes than frames, so a leaked pin per delete fills the pool
+    for i in 0..20u16 {
+        tree.insert(format!("key{i:03}").as_bytes(), rid(1, i))
+            .unwrap();
+    }
+    for i in 0..20u16 {
+        tree.delete(format!("key{i:03}").as_bytes()).unwrap();
+    }
+
+    assert_eq!(tree.lookup(b"key019").unwrap(), None);
+}
+
+#[test]
 fn overwriting_after_a_split_finds_the_right_leaf() {
     let (_dir, path) = temp_db();
     let mut tree = BTree::open(&path, FRAMES).unwrap();

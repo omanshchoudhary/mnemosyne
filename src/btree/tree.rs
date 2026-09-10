@@ -8,11 +8,9 @@ use crate::btree::node::{
 };
 use crate::buffer::{BufferPool, FrameId};
 use crate::error::{Error, Result};
+use crate::page::meta::META_PAGE_ID;
 use crate::page::slotted::SlotId;
 use crate::page::{PageId, RecordId};
-
-// 0 reserved for MetaPage
-const META_PAGE_ID: PageId = PageId(0);
 
 pub struct BTree {
     pool: BufferPool,

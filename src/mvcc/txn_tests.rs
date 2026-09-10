@@ -1,33 +1,33 @@
 use super::*;
 
-fn set(ids: &[u64]) -> BTreeSet<u64> {
-    ids.iter().copied().collect()
+fn set(timestamps: &[u64]) -> BTreeSet<u64> {
+    timestamps.iter().copied().collect()
 }
 
 #[test]
-fn ids_start_where_the_manager_was_told() {
+fn timestamps_start_where_the_manager_was_told() {
     let mut manager = TxnManager::new(42);
 
-    assert_eq!(manager.begin().id, 42);
+    assert_eq!(manager.begin().timestamp, 42);
 }
 
 #[test]
-fn ids_go_up_by_one() {
+fn timestamps_go_up_by_one() {
     let mut manager = TxnManager::new(1);
 
-    let ids: Vec<u64> = (0..3).map(|_| manager.begin().id).collect();
+    let timestamps: Vec<u64> = (0..3).map(|_| manager.begin().timestamp).collect();
 
-    assert_eq!(ids, [1, 2, 3]);
+    assert_eq!(timestamps, [1, 2, 3]);
 }
 
 #[test]
-fn ids_are_never_reused_after_a_finish() {
+fn timestamps_are_never_reused_after_a_finish() {
     let mut manager = TxnManager::new(1);
 
     let first = manager.begin();
-    manager.finish(first.id);
+    manager.finish(first.timestamp);
 
-    assert_eq!(manager.begin().id, 2);
+    assert_eq!(manager.begin().timestamp, 2);
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn a_txn_is_not_in_its_own_snapshot() {
 
     let txn = manager.begin();
 
-    assert!(!txn.running_at_begin.contains(&txn.id));
+    assert!(!txn.running_at_begin.contains(&txn.timestamp));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn a_finished_txn_is_not_in_later_snapshots() {
     let mut manager = TxnManager::new(1);
     let first = manager.begin();
 
-    manager.finish(first.id);
+    manager.finish(first.timestamp);
 
     assert_eq!(manager.begin().running_at_begin, set(&[]));
 }
@@ -73,7 +73,7 @@ fn finishing_removes_only_that_txn() {
     let second = manager.begin();
     manager.begin();
 
-    manager.finish(second.id);
+    manager.finish(second.timestamp);
 
     assert_eq!(manager.begin().running_at_begin, set(&[1, 3]));
 }
@@ -84,7 +84,7 @@ fn a_snapshot_does_not_change_after_begin() {
     let first = manager.begin();
     let second = manager.begin();
 
-    manager.finish(first.id);
+    manager.finish(first.timestamp);
 
     assert_eq!(second.running_at_begin, set(&[1]));
 }
@@ -94,7 +94,7 @@ fn a_commit_between_two_begins_shows_in_one_snapshot_and_not_the_next() {
     let mut manager = TxnManager::new(1);
     let t1 = manager.begin();
     let t2 = manager.begin();
-    manager.finish(t1.id);
+    manager.finish(t1.timestamp);
     let t3 = manager.begin();
 
     assert_eq!(t2.running_at_begin, set(&[1]));

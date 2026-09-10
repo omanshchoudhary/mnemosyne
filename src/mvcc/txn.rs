@@ -3,38 +3,52 @@
 use std::collections::BTreeSet;
 
 pub struct Txn {
-    pub(crate) id: u64,
+    pub(crate) timestamp: u64,
     // snapshot: other transactions that had begun but hadn't committed or aborted at the instant I started
     pub(crate) running_at_begin: BTreeSet<u64>,
 }
 
+impl Txn {
+    // can i see writer_txn work
+    pub(crate) fn sees(&self, writer_txn: u64) -> bool {
+        self.timestamp == writer_txn
+            || (self.timestamp > writer_txn && !self.running_at_begin.contains(&writer_txn))
+    }
+
+    // can i see this version of record
+    pub(crate) fn sees_version(&self, begin: u64, end: u64) -> bool {
+        self.sees(begin) && !self.sees(end)
+    }
+}
+
 pub(crate) struct TxnManager {
-    next_id: u64,
+    next_timestamp: u64,
     // current running transactions
     active: BTreeSet<u64>,
 }
 
 impl TxnManager {
-    pub(crate) fn new(next_id: u64) -> Self {
+    pub(crate) fn new(next_timestamp: u64) -> Self {
         Self {
-            next_id,
+            next_timestamp,
             active: BTreeSet::new(),
         }
     }
 
+    // configure a new Txn beginning
     pub(crate) fn begin(&mut self) -> Txn {
-        let id = self.next_id;
-        self.next_id += 1;
+        let timestamp = self.next_timestamp;
+        self.next_timestamp += 1;
         let running_at_begin = self.active.clone();
-        self.active.insert(id);
+        self.active.insert(timestamp);
         Txn {
-            id,
+            timestamp,
             running_at_begin,
         }
     }
 
-    pub(crate) fn finish(&mut self, id: u64) {
-        self.active.remove(&id);
+    pub(crate) fn finish(&mut self, timestamp: u64) {
+        self.active.remove(&timestamp);
     }
 }
 

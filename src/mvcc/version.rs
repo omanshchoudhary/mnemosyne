@@ -46,3 +46,7 @@ pub(crate) fn version_value(version: &[u8]) -> &[u8] {
 pub(crate) fn set_version_end(version: &mut [u8], end: u64) {
     version[OFF_END..OFF_PREV].copy_from_slice(&end.to_le_bytes());
 }
+
+#[cfg(test)]
+#[path = "version_tests.rs"]
+mod tests;

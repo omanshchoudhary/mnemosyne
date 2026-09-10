@@ -37,3 +37,7 @@ impl TxnManager {
         self.active.remove(&id);
     }
 }
+
+#[cfg(test)]
+#[path = "txn_tests.rs"]
+mod tests;

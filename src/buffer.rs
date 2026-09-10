@@ -34,7 +34,7 @@ impl BufferPool {
         })
     }
 
-    pub fn fetch_page(&mut self, page_id: PageId) -> Result<FrameId> {
+    pub fn fetch_and_pin(&mut self, page_id: PageId) -> Result<FrameId> {
         // hit
         if let Some(&frame_id) = self.page_table.get(&page_id) {
             if !self.frames[frame_id].is_pinned() {

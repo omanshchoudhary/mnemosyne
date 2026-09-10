@@ -20,7 +20,7 @@ fn rid(page: u64, slot: u16) -> RecordId {
 // how many entries the root leaf is holding
 fn root_slot_count(tree: &mut BTree) -> u16 {
     let root = tree.root().unwrap();
-    let frame = tree.pool.fetch_page(root).unwrap();
+    let frame = tree.pool.fetch_and_pin(root).unwrap();
     let count = tree.pool.page(frame).slot_count();
     tree.pool.unpin(frame).unwrap();
     count
@@ -34,7 +34,7 @@ fn a_fresh_file_gets_a_meta_page_and_an_empty_root_leaf() {
     // meta is page 0, so the first page the tree can use is 1
     assert_eq!(tree.root().unwrap(), PageId(1));
 
-    let frame = tree.pool.fetch_page(PageId(1)).unwrap();
+    let frame = tree.pool.fetch_and_pin(PageId(1)).unwrap();
     let root = tree.pool.page(frame);
     assert!(root.is_leaf());
     assert_eq!(root.slot_count(), 0);
@@ -210,7 +210,7 @@ fn insert_leaves_no_frame_pinned() {
 fn leftmost_leaf(tree: &mut BTree) -> PageId {
     let mut page_id = tree.root().unwrap();
     loop {
-        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let frame = tree.pool.fetch_and_pin(page_id).unwrap();
         let page = tree.pool.page(frame);
         if page.is_leaf() {
             tree.pool.unpin(frame).unwrap();
@@ -237,7 +237,7 @@ fn the_tree_grows_past_a_single_page() {
 
     // the root started life as a leaf, so an internal root proves it split
     let root = tree.root().unwrap();
-    let frame = tree.pool.fetch_page(root).unwrap();
+    let frame = tree.pool.fetch_and_pin(root).unwrap();
     assert!(tree.pool.page(frame).is_internal());
     tree.pool.unpin(frame).unwrap();
 
@@ -287,7 +287,7 @@ fn the_leaf_chain_holds_every_key_in_order() {
     let mut leaves = 0;
 
     while let Some(page_id) = leaf {
-        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let frame = tree.pool.fetch_and_pin(page_id).unwrap();
         let page = tree.pool.page(frame);
         for slot in 0..page.slot_count() {
             seen.push(page.leaf_key(slot).unwrap().to_vec());
@@ -404,7 +404,7 @@ fn emptying_the_root_leaf_leaves_a_usable_tree() {
     assert_eq!(root_slot_count(&mut tree), 0);
     assert_eq!(tree.root().unwrap(), PageId(1));
 
-    let frame = tree.pool.fetch_page(PageId(1)).unwrap();
+    let frame = tree.pool.fetch_and_pin(PageId(1)).unwrap();
     assert!(tree.pool.page(frame).is_leaf());
     tree.pool.unpin(frame).unwrap();
 }
@@ -483,7 +483,7 @@ fn leaf_count(tree: &mut BTree) -> usize {
     let mut leaf = Some(leftmost_leaf(tree));
     let mut leaves = 0;
     while let Some(page_id) = leaf {
-        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let frame = tree.pool.fetch_and_pin(page_id).unwrap();
         leaf = tree.pool.page(frame).next_leaf();
         tree.pool.unpin(frame).unwrap();
         leaves += 1;
@@ -495,7 +495,7 @@ fn depth(tree: &mut BTree) -> usize {
     let mut page_id = tree.root().unwrap();
     let mut levels = 1;
     loop {
-        let frame = tree.pool.fetch_page(page_id).unwrap();
+        let frame = tree.pool.fetch_and_pin(page_id).unwrap();
         let page = tree.pool.page(frame);
         if page.is_leaf() {
             tree.pool.unpin(frame).unwrap();

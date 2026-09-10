@@ -28,7 +28,7 @@ fn a_written_page_reads_back_through_the_pool() {
     pool.page_for_write(frame_id).write_u64(0, 0xCAFE);
     pool.unpin(frame_id).unwrap();
 
-    let again = pool.fetch_page(page_id).unwrap();
+    let again = pool.fetch_and_pin(page_id).unwrap();
     assert_eq!(pool.page(again).read_u64(0), 0xCAFE);
 }
 
@@ -40,7 +40,7 @@ fn fetching_a_cached_page_reuses_its_frame() {
     let (page_id, frame_id) = pool.new_page().unwrap();
     pool.unpin(frame_id).unwrap();
 
-    assert_eq!(pool.fetch_page(page_id).unwrap(), frame_id);
+    assert_eq!(pool.fetch_and_pin(page_id).unwrap(), frame_id);
     assert_eq!(pool.free_list.len(), 3);
 }
 
@@ -60,7 +60,7 @@ fn a_dirty_page_survives_eviction() {
 
     assert!(!pool.page_table.contains_key(&first));
 
-    let frame_id = pool.fetch_page(first).unwrap();
+    let frame_id = pool.fetch_and_pin(first).unwrap();
     assert_eq!(pool.page(frame_id).read_u64(0), 42);
 }
 
@@ -106,7 +106,7 @@ fn a_page_pinned_twice_needs_two_unpins() {
     let mut pool = BufferPool::open(&path, 1).unwrap();
 
     let (page_id, frame_id) = pool.new_page().unwrap();
-    assert_eq!(pool.fetch_page(page_id).unwrap(), frame_id);
+    assert_eq!(pool.fetch_and_pin(page_id).unwrap(), frame_id);
 
     pool.unpin(frame_id).unwrap();
     assert!(matches!(pool.new_page(), Err(Error::BufferPoolFull)));
@@ -143,7 +143,7 @@ fn flush_all_puts_everything_on_disk() {
     };
 
     let mut pool = BufferPool::open(&path, 4).unwrap();
-    let frame_id = pool.fetch_page(page_id).unwrap();
+    let frame_id = pool.fetch_and_pin(page_id).unwrap();
     assert_eq!(pool.page(frame_id).read_u64(0), 0xDEAD_BEEF);
 }
 
@@ -160,6 +160,6 @@ fn dropping_the_pool_without_flushing_loses_the_change() {
     };
 
     let mut pool = BufferPool::open(&path, 4).unwrap();
-    let frame_id = pool.fetch_page(page_id).unwrap();
+    let frame_id = pool.fetch_and_pin(page_id).unwrap();
     assert_eq!(pool.page(frame_id).read_u64(0), 0);
 }

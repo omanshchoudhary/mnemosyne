@@ -34,7 +34,7 @@ impl BTree {
             pool.unpin(meta_frame)?;
             pool.flush_all()?;
         } else {
-            let meta_frame = pool.fetch_page(META_PAGE_ID)?;
+            let meta_frame = pool.fetch_and_pin(META_PAGE_ID)?;
             let valid = pool.page(meta_frame).is_meta();
             pool.unpin(meta_frame)?;
 
@@ -47,14 +47,14 @@ impl BTree {
     }
 
     fn root(&mut self) -> Result<PageId> {
-        let frame = self.pool.fetch_page(META_PAGE_ID)?;
+        let frame = self.pool.fetch_and_pin(META_PAGE_ID)?;
         let root = self.pool.page(frame).root_page_id();
         self.pool.unpin(frame)?;
         Ok(root)
     }
 
     fn set_root(&mut self, root: PageId) -> Result<()> {
-        let frame = self.pool.fetch_page(META_PAGE_ID)?;
+        let frame = self.pool.fetch_and_pin(META_PAGE_ID)?;
         self.pool.page_for_write(frame).set_root_page_id(root);
         self.pool.unpin(frame)?;
         Ok(())
@@ -64,7 +64,7 @@ impl BTree {
         let mut page_id = self.root()?;
 
         loop {
-            let frame = self.pool.fetch_page(page_id)?;
+            let frame = self.pool.fetch_and_pin(page_id)?;
             if self.pool.page(frame).is_leaf() {
                 return Ok(frame); // still pinned, on purpose
             }
@@ -99,7 +99,7 @@ impl BTree {
         key: &[u8],
         record: RecordId,
     ) -> Result<Option<(Vec<u8>, PageId)>> {
-        let frame = self.pool.fetch_page(page_id)?;
+        let frame = self.pool.fetch_and_pin(page_id)?;
 
         if !self.pool.page(frame).is_leaf() {
             let child = self.pool.page(frame).child_for_key(key)?;
@@ -109,7 +109,7 @@ impl BTree {
                 return Ok(None);
             };
 
-            let frame = self.pool.fetch_page(page_id)?;
+            let frame = self.pool.fetch_and_pin(page_id)?;
 
             let (_, pos) = self.pool.page(frame).search_slot(&separator)?;
             let was_rightmost = pos == self.pool.page(frame).slot_count();
@@ -237,7 +237,7 @@ impl BTree {
         let root = self.root()?;
         let (removed, _) = self.delete_from(root, key)?;
 
-        let frame = self.pool.fetch_page(root)?;
+        let frame = self.pool.fetch_and_pin(root)?;
         let collapse = !self.pool.page(frame).is_leaf() && self.pool.page(frame).slot_count() == 0;
         let survivor = if collapse {
             self.pool.page(frame).rightmost_child()
@@ -254,7 +254,7 @@ impl BTree {
     }
 
     fn delete_from(&mut self, page_id: PageId, key: &[u8]) -> Result<(bool, bool)> {
-        let frame = self.pool.fetch_page(page_id)?;
+        let frame = self.pool.fetch_and_pin(page_id)?;
 
         if !self.pool.page(frame).is_leaf() {
             let child_slot = self.pool.page(frame).child_slot_for_key(key)?;
@@ -269,7 +269,7 @@ impl BTree {
 
             self.rebalance_child(page_id, child_slot)?;
 
-            let frame = self.pool.fetch_page(page_id)?;
+            let frame = self.pool.fetch_and_pin(page_id)?;
             let underfull = self.pool.page(frame).is_underfull();
             self.pool.unpin(frame)?;
 
@@ -289,18 +289,18 @@ impl BTree {
     }
 
     fn merge_fits(&mut self, parent: PageId, left_slot: SlotId) -> Result<bool> {
-        let frame = self.pool.fetch_page(parent)?;
+        let frame = self.pool.fetch_and_pin(parent)?;
         let left = self.pool.page(frame).child_at(left_slot)?;
         let right = self.pool.page(frame).child_at(left_slot + 1)?;
         let separator = self.pool.page(frame).internal_key(left_slot)?.to_vec();
         self.pool.unpin(frame)?;
 
-        let frame = self.pool.fetch_page(left)?;
+        let frame = self.pool.fetch_and_pin(left)?;
         let is_leaf = self.pool.page(frame).is_leaf();
         let available = self.pool.page(frame).free_space() + self.pool.page(frame).frag_space();
         self.pool.unpin(frame)?;
 
-        let frame = self.pool.fetch_page(right)?;
+        let frame = self.pool.fetch_and_pin(right)?;
         let incoming = self.pool.page(frame).live_bytes();
         self.pool.unpin(frame)?;
 
@@ -309,7 +309,7 @@ impl BTree {
     }
 
     fn rebalance_child(&mut self, parent: PageId, child_slot: SlotId) -> Result<()> {
-        let frame = self.pool.fetch_page(parent)?;
+        let frame = self.pool.fetch_and_pin(parent)?;
         let slot_count = self.pool.page(frame).slot_count();
         self.pool.unpin(frame)?;
 
@@ -331,19 +331,19 @@ impl BTree {
     }
 
     fn merge_children(&mut self, parent: PageId, left_slot: SlotId) -> Result<()> {
-        let frame = self.pool.fetch_page(parent)?;
+        let frame = self.pool.fetch_and_pin(parent)?;
         let left = self.pool.page(frame).child_at(left_slot)?;
         let right = self.pool.page(frame).child_at(left_slot + 1)?;
         let separator = self.pool.page(frame).internal_key(left_slot)?.to_vec();
         self.pool.unpin(frame)?;
 
-        let frame = self.pool.fetch_page(right)?;
+        let frame = self.pool.fetch_and_pin(right)?;
         let is_leaf = self.pool.page(frame).is_leaf();
         let moved = self.pool.page(frame).entries()?;
         let right_link = self.pool.page(frame).next_leaf();
         self.pool.unpin(frame)?;
 
-        let frame = self.pool.fetch_page(left)?;
+        let frame = self.pool.fetch_and_pin(left)?;
         self.pool.page_for_write(frame).compact();
         if !is_leaf {
             let left_link = self
@@ -366,7 +366,7 @@ impl BTree {
         }
         self.pool.unpin(frame)?;
 
-        let frame = self.pool.fetch_page(parent)?;
+        let frame = self.pool.fetch_and_pin(parent)?;
         self.pool.page_for_write(frame).remove_slot_at(left_slot)?;
         if left_slot == self.pool.page(frame).slot_count() {
             self.pool.page_for_write(frame).set_rightmost_child(left);
@@ -417,7 +417,7 @@ impl BTree {
 
             match next {
                 Some(page_id) => {
-                    frame = self.pool.fetch_page(page_id)?;
+                    frame = self.pool.fetch_and_pin(page_id)?;
                     slot = 0;
                 }
                 None => break,

@@ -378,6 +378,7 @@ impl BTree {
         Ok(())
     }
 
+    // returns the RecordId for the key
     pub fn lookup(&mut self, key: &[u8]) -> Result<Option<RecordId>> {
         let frame = self.find_leaf(key)?;
 
@@ -422,6 +423,9 @@ impl BTree {
             }
         }
         Ok(out)
+    }
+    pub(crate) fn pool(&mut self) -> &mut BufferPool {
+        &mut self.pool
     }
 }
 

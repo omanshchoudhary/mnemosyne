@@ -14,6 +14,7 @@ const OFF_VERSION: usize = 4; // u32
 const OFF_ROOT: usize = 8; // u64 - B+tree root page id
 const OFF_FREE_LIST: usize = 16; // u64 - head of the free page list, later
 const OFF_HEAP_TAIL: usize = 24; // u64 - heap page new records go to
+const OFF_NEXT_TIMESTAMP: usize = 32; // u64 - timestamp the next transaction gets
 
 impl Page {
     // meta page creation when db file is created
@@ -22,6 +23,7 @@ impl Page {
         self.write_u32(OFF_VERSION, META_VERSION);
         self.write_u64(OFF_FREE_LIST, 0);
         self.write_u64(OFF_HEAP_TAIL, 0);
+        self.write_u64(OFF_NEXT_TIMESTAMP, 0);
         self.set_root_page_id(root);
     }
 
@@ -46,6 +48,13 @@ impl Page {
 
     pub(crate) fn set_heap_tail(&mut self, tail: PageId) {
         self.write_u64(OFF_HEAP_TAIL, tail.0);
+    }
+    pub(crate) fn next_timestamp(&self) -> u64 {
+        self.read_u64(OFF_NEXT_TIMESTAMP)
+    }
+
+    pub(crate) fn set_next_timestamp(&mut self, timestamp: u64) {
+        self.write_u64(OFF_NEXT_TIMESTAMP, timestamp);
     }
 }
 

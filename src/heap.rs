@@ -52,6 +52,17 @@ pub(crate) fn get(pool: &mut BufferPool, rid: RecordId) -> Result<Vec<u8>> {
     out
 }
 
+// used to add end timestamps on a head which is going to become prev
+pub(crate) fn overwrite(pool: &mut BufferPool, rid: RecordId, record: &[u8]) -> Result<()> {
+    let frame = pool.fetch_and_pin(rid.page)?;
+    let written = pool
+        .page_for_write(frame)
+        .slot_bytes_mut(rid.slot)
+        .map(|bytes| bytes.copy_from_slice(record));
+    pool.unpin(frame)?;
+    written
+}
+
 #[cfg(test)]
 #[path = "heap_tests.rs"]
 mod tests;

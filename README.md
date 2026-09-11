@@ -17,22 +17,32 @@ parts of a database that make data survive a power cut.
 
 ## Status
 
-Work in progress. The bottom half of the stack is in:
+Work in progress. Storage, the index and a first cut of MVCC are in:
 
 | Layer | What it does |
 |-------|----------------|
 | **Disk manager** | Positional 4 KB page I/O, allocate, `fsync` |
 | **Pages** | Little-endian typed reads/writes; slotted layout for variable records |
-| **Meta page** | Page 0, holding magic, version and the B+tree root pointer |
+| **Meta page** | Page 0, holding magic, version, the B+tree root, the heap tail and the next transaction timestamp |
 | **Buffer pool** | Fixed frames, pin/unpin, LRU eviction, dirty flush |
 | **B+tree** | Insert, lookup, delete, range scan, splits and merges |
+| **Heap** | Append-only records on slotted pages; values live here and the tree points at them |
+| **MVCC** | Per-key version chains, newest first, stamped with begin and end timestamps; snapshot visibility |
+| **Db** | `begin`, `get`, `put`, `commit` and `close` over all of the above |
 
-Still ahead: WAL, MVCC / snapshot isolation, ARIES-style recovery, version GC.
+Still ahead: write-write conflict detection, abort, delete through `Db`, version
+GC, WAL, ARIES-style recovery.
 
 Two limits in the tree are deliberate. A merged-away page is not reused yet, so
 the file only grows; the free list belongs with GC. And an underfull node whose
 sibling will not fit is left underfull rather than redistributed, which costs
 some density and no correctness.
+
+The transaction layer is a first cut. Reads are snapshot-consistent, but until
+conflict detection lands, two transactions can both update the same key and one
+of the writes is lost. There is no abort yet. A commit is not durable on its
+own: pages reach disk on eviction or `close`, so a crash can lose committed work
+until the WAL is in. Old versions are never reclaimed.
 
 Build notes live in [`docs/build-thread.md`](docs/build-thread.md).
 
@@ -48,6 +58,12 @@ src/
   buffer/replacer.rs LRU
   btree/tree.rs     open, insert, lookup, delete, scan, splits, merges
   btree/node.rs     leaf / internal encoding and search
+  heap.rs           append-only records, tail tracked in page 0
+  mvcc/version.rs   version record: begin, end, prev, value
+  mvcc/txn.rs       timestamps, snapshots, visibility
+  db.rs             transactional get / put over the tree and heap
+tests/
+  db.rs             end-to-end transaction scenarios
 ```
 
 Pages are 4096 bytes. Slot entries are 4 bytes (`u16` offset + `u16` length). Leaves
@@ -55,23 +71,37 @@ store `RecordId` (page + slot) plus the key. Internal nodes store child page ids
 and separators. Page 0 is reserved as the meta page, so `PageId(0)` is never a
 tree node.
 
+A value is stored in the heap as a version: a 26-byte header (`begin` and `end`
+timestamps, then the `RecordId` of the previous version) followed by the value.
+The leaf points at the newest version and each version points one step older, so
+an update appends a version and rewrites 10 bytes in the leaf.
+
 ## Use
 
 ```rust
-use mnemosyne::btree::BTree;
-use mnemosyne::page::{PageId, RecordId};
+use mnemosyne::db::Db;
 
-let mut tree = BTree::open(path, /* frame_count */ 32)?;
-tree.insert(b"alpha", RecordId { page: PageId(3), slot: 1 })?;
+let mut db = Db::open(path, /* frame_count */ 32)?;
 
-let rid = tree.lookup(b"alpha")?;
-let range = tree.scan(b"a", b"z")?;
-let gone = tree.delete(b"alpha")?;
+let mut txn = db.begin()?;
+db.put(&mut txn, b"alice", b"100")?;
+db.commit(txn);
+
+let reader = db.begin()?;
+let value = db.get(&reader, b"alice")?;
+
+db.close()?;
 ```
 
-`open` creates a fresh file (meta page + empty root leaf) or reopens an existing
-one. `insert` overwrites the record id if the key already exists. `scan` is
-half-open: `[start, end)`. `delete` returns whether the key was there.
+`open` creates a fresh file or reopens an existing one, and timestamps carry on
+from where the last session stopped. A transaction sees its own writes and
+everything committed before it began, and nothing else, for as long as it runs.
+`commit` makes its writes visible to transactions that begin afterwards. `close`
+writes every dirty page to disk.
+
+The B+tree underneath is usable on its own (`BTree::open`, `insert`, `lookup`,
+`scan`, `delete`), mapping keys to `RecordId`s. `scan` is half-open:
+`[start, end)`.
 
 ## Build
 

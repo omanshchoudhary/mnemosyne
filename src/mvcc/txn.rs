@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::mvcc::version::NO_END;
+
 pub struct Txn {
     pub(crate) timestamp: u64,
     // snapshot: other transactions that had begun but hadn't committed or aborted at the instant I started
@@ -18,6 +20,11 @@ impl Txn {
     // can i see this version of record
     pub(crate) fn sees_version(&self, begin: u64, end: u64) -> bool {
         self.sees(begin) && !self.sees(end)
+    }
+
+    pub(crate) fn can_add_newer_version(&self, begin: u64, end: u64) -> bool {
+        let last_writer = if end == NO_END { begin } else { end };
+        self.sees(last_writer)
     }
 }
 

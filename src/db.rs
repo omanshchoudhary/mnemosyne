@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::btree::BTree;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::heap;
 use crate::mvcc::txn::{Txn, TxnManager};
 use crate::mvcc::version::{
@@ -65,13 +65,24 @@ impl Db {
     // writes a new version of key stamped with this txn's timestamp
     pub fn put(&mut self, txn: &mut Txn, key: &[u8], value: &[u8]) -> Result<()> {
         let head = self.tree.lookup(key)?;
+        // old_rid and old_version bytes
+        let old = match head {
+            Some(old_rid) => Some((old_rid, heap::get(self.tree.pool(), old_rid)?)),
+            None => None,
+        };
+
+        if let Some((_, old_version)) = &old
+            && !txn.can_add_newer_version(version_begin(old_version), version_end(old_version))
+        {
+            return Err(Error::WriteConflict);
+        }
+
         let version = encode_version(txn.timestamp, head, value);
         let new_rid = heap::insert(self.tree.pool(), &version)?;
-
-        if let Some(old_rid) = head {
-            let mut old = heap::get(self.tree.pool(), old_rid)?;
-            set_version_end(&mut old, txn.timestamp);
-            heap::overwrite(self.tree.pool(), old_rid, &old)?;
+        // if there is an old version and I can't replace it then fail.
+        if let Some((old_rid, mut old_version)) = old {
+            set_version_end(&mut old_version, txn.timestamp);
+            heap::overwrite(self.tree.pool(), old_rid, &old_version)?;
         }
 
         self.tree.insert(key, new_rid)

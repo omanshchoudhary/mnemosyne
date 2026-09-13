@@ -23,6 +23,9 @@ pub enum Error {
     #[error("page 0 is not a mnemosyne meta page, or its format version is unsupported")]
     BadMetaPage,
 
+    #[error("another transaction wrote this key first, retry in a new transaction")]
+    WriteConflict,
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

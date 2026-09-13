@@ -5,7 +5,8 @@ use crate::error::{Error, Result};
 use crate::heap;
 use crate::mvcc::txn::{Txn, TxnManager};
 use crate::mvcc::version::{
-    encode_version, set_version_end, version_begin, version_end, version_prev, version_value,
+    NO_END, encode_version, set_version_end, version_begin, version_end, version_prev,
+    version_value,
 };
 use crate::page::meta::META_PAGE_ID;
 
@@ -71,6 +72,7 @@ impl Db {
             None => None,
         };
 
+        // if there is an old version and I can't replace it then fail.
         if let Some((_, old_version)) = &old
             && !txn.can_add_newer_version(version_begin(old_version), version_end(old_version))
         {
@@ -79,13 +81,36 @@ impl Db {
 
         let version = encode_version(txn.timestamp, head, value);
         let new_rid = heap::insert(self.tree.pool(), &version)?;
-        // if there is an old version and I can't replace it then fail.
-        if let Some((old_rid, mut old_version)) = old {
+        if let Some((old_rid, mut old_version)) = old
+            && version_end(&old_version) == NO_END
+        {
             set_version_end(&mut old_version, txn.timestamp);
             heap::overwrite(self.tree.pool(), old_rid, &old_version)?;
         }
 
         self.tree.insert(key, new_rid)
+    }
+
+    // crosses out the head for this txn, older snapshots still read it
+    pub fn delete(&mut self, txn: &mut Txn, key: &[u8]) -> Result<bool> {
+        // old_rid and old_version bytes
+        let Some(old_rid) = self.tree.lookup(key)? else {
+            return Ok(false);
+        };
+        let mut old_version = heap::get(self.tree.pool(), old_rid)?;
+
+        if !txn.can_add_newer_version(version_begin(&old_version), version_end(&old_version)) {
+            return Err(Error::WriteConflict);
+        }
+
+        if version_end(&old_version) != NO_END {
+            return Ok(false);
+        }
+
+        set_version_end(&mut old_version, txn.timestamp);
+        heap::overwrite(self.tree.pool(), old_rid, &old_version)?;
+
+        Ok(true)
     }
 
     // txn stops running, so txns that begin after this can see its writes

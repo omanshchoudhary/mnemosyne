@@ -1,4 +1,5 @@
 use mnemosyne::db::Db;
+use mnemosyne::error::Error;
 use mnemosyne::mvcc::Txn;
 use tempfile::TempDir;
 
@@ -206,4 +207,118 @@ fn timestamps_carry_on_after_a_reopen() {
     let reader = db.begin().unwrap();
 
     assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn the_second_writer_of_a_key_gets_a_conflict() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut first = db.begin().unwrap();
+    let mut second = db.begin().unwrap();
+    db.put(&mut first, b"alice", b"150").unwrap();
+
+    assert!(matches!(
+        db.put(&mut second, b"alice", b"130"),
+        Err(Error::WriteConflict)
+    ));
+}
+
+#[test]
+fn the_older_txn_loses_if_a_younger_one_wrote_first() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut older = db.begin().unwrap();
+    let mut younger = db.begin().unwrap();
+    db.put(&mut younger, b"alice", b"130").unwrap();
+
+    assert!(matches!(
+        db.put(&mut older, b"alice", b"150"),
+        Err(Error::WriteConflict)
+    ));
+}
+
+#[test]
+fn a_write_committed_after_a_txn_began_still_conflicts() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut late = db.begin().unwrap();
+    write_committed(&mut db, b"alice", b"200");
+
+    assert!(matches!(
+        db.put(&mut late, b"alice", b"150"),
+        Err(Error::WriteConflict)
+    ));
+}
+
+#[test]
+fn a_write_committed_before_a_txn_began_does_not_conflict() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut txn = db.begin().unwrap();
+
+    assert!(db.put(&mut txn, b"alice", b"150").is_ok());
+}
+
+#[test]
+fn writes_to_different_keys_never_conflict() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+
+    let mut first = db.begin().unwrap();
+    let mut second = db.begin().unwrap();
+
+    assert!(db.put(&mut first, b"alice", b"100").is_ok());
+    assert!(db.put(&mut second, b"bob", b"200").is_ok());
+}
+
+#[test]
+fn a_rejected_put_leaves_the_key_untouched() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut winner = db.begin().unwrap();
+    let mut loser = db.begin().unwrap();
+    db.put(&mut winner, b"alice", b"150").unwrap();
+    db.put(&mut loser, b"alice", b"130").unwrap_err();
+    db.commit(winner);
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&loser, b"alice").unwrap(), Some(b"100".to_vec()));
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"150".to_vec()));
+}
+
+#[test]
+fn concurrent_increments_lose_nothing_when_the_loser_retries() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", &100u64.to_le_bytes());
+
+    let mut plus_50 = db.begin().unwrap();
+    let mut plus_30 = db.begin().unwrap();
+    let seen_by_50 = balance(&mut db, &plus_50, b"alice");
+    let seen_by_30 = balance(&mut db, &plus_30, b"alice");
+    db.put(&mut plus_50, b"alice", &(seen_by_50 + 50).to_le_bytes())
+        .unwrap();
+    let rejected = db.put(&mut plus_30, b"alice", &(seen_by_30 + 30).to_le_bytes());
+    db.commit(plus_50);
+    db.commit(plus_30);
+
+    let mut retry = db.begin().unwrap();
+    let seen_by_retry = balance(&mut db, &retry, b"alice");
+    db.put(&mut retry, b"alice", &(seen_by_retry + 30).to_le_bytes())
+        .unwrap();
+    db.commit(retry);
+    let reader = db.begin().unwrap();
+
+    assert!(matches!(rejected, Err(Error::WriteConflict)));
+    assert_eq!(balance(&mut db, &reader, b"alice"), 180);
 }

@@ -200,3 +200,29 @@ fn every_later_txn_reads_exactly_one_version() {
         assert_eq!(visible(&txn(timestamp, &[]), &chain).len(), 1);
     }
 }
+
+#[test]
+fn a_txn_can_add_on_top_of_a_version_committed_before_it_began() {
+    assert!(txn(5, &[]).can_add_newer_version(3, NO_END));
+}
+
+#[test]
+fn a_txn_can_add_on_top_of_its_own_version() {
+    assert!(txn(5, &[]).can_add_newer_version(5, NO_END));
+}
+
+#[test]
+fn a_txn_cannot_add_on_top_of_a_version_from_a_txn_running_when_it_began() {
+    assert!(!txn(5, &[3]).can_add_newer_version(3, NO_END));
+}
+
+#[test]
+fn a_txn_cannot_add_on_top_of_a_version_from_a_younger_txn() {
+    assert!(!txn(5, &[]).can_add_newer_version(7, NO_END));
+}
+
+#[test]
+fn an_ended_head_is_judged_by_the_txn_that_ended_it() {
+    assert!(txn(9, &[]).can_add_newer_version(3, 7));
+    assert!(!txn(9, &[7]).can_add_newer_version(3, 7));
+}

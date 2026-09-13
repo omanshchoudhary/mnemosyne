@@ -322,3 +322,195 @@ fn concurrent_increments_lose_nothing_when_the_loser_retries() {
     assert!(matches!(rejected, Err(Error::WriteConflict)));
     assert_eq!(balance(&mut db, &reader, b"alice"), 180);
 }
+
+#[test]
+fn deleting_a_key_that_was_never_written_is_false() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+
+    let mut txn = db.begin().unwrap();
+
+    assert!(!db.delete(&mut txn, b"alice").unwrap());
+}
+
+#[test]
+fn a_deleted_key_is_gone_for_txns_that_begin_after() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut deleter = db.begin().unwrap();
+    assert!(db.delete(&mut deleter, b"alice").unwrap());
+    db.commit(deleter);
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), None);
+}
+
+#[test]
+fn a_txn_no_longer_sees_a_key_it_deleted() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut txn = db.begin().unwrap();
+    db.delete(&mut txn, b"alice").unwrap();
+
+    assert_eq!(db.get(&txn, b"alice").unwrap(), None);
+}
+
+#[test]
+fn an_uncommitted_delete_is_invisible_to_other_txns() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn a_txn_that_began_before_a_delete_still_reads_the_value() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let reader = db.begin().unwrap();
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn deleting_the_same_key_twice_reports_it_once() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut deleter = db.begin().unwrap();
+    let first = db.delete(&mut deleter, b"alice").unwrap();
+    let second = db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+    let mut later = db.begin().unwrap();
+    let third = db.delete(&mut later, b"alice").unwrap();
+
+    assert_eq!((first, second, third), (true, false, false));
+}
+
+#[test]
+fn a_deleted_key_can_be_written_again() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+    write_committed(&mut db, b"alice", b"200");
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"200".to_vec()));
+}
+
+#[test]
+fn writing_a_deleted_key_again_does_not_bring_it_back_for_txns_in_between() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+    let in_between = db.begin().unwrap();
+    write_committed(&mut db, b"alice", b"200");
+    let after = db.begin().unwrap();
+
+    assert_eq!(db.get(&in_between, b"alice").unwrap(), None);
+    assert_eq!(db.get(&after, b"alice").unwrap(), Some(b"200".to_vec()));
+}
+
+#[test]
+fn a_delete_conflicts_with_a_concurrent_put() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut writer = db.begin().unwrap();
+    let mut deleter = db.begin().unwrap();
+    db.put(&mut writer, b"alice", b"150").unwrap();
+
+    assert!(matches!(
+        db.delete(&mut deleter, b"alice"),
+        Err(Error::WriteConflict)
+    ));
+}
+
+#[test]
+fn a_put_conflicts_with_a_concurrent_delete() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut deleter = db.begin().unwrap();
+    let mut writer = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+
+    assert!(matches!(
+        db.put(&mut writer, b"alice", b"150"),
+        Err(Error::WriteConflict)
+    ));
+}
+
+#[test]
+fn two_concurrent_deletes_conflict_instead_of_both_succeeding() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut first = db.begin().unwrap();
+    let mut second = db.begin().unwrap();
+    db.delete(&mut first, b"alice").unwrap();
+
+    assert!(matches!(
+        db.delete(&mut second, b"alice"),
+        Err(Error::WriteConflict)
+    ));
+}
+
+#[test]
+fn deleting_a_key_leaves_other_keys_alone() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+    write_committed(&mut db, b"bob", b"200");
+
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"bob").unwrap(), Some(b"200".to_vec()));
+}
+
+#[test]
+fn a_delete_survives_a_reopen() {
+    let (_dir, path) = temp_db();
+    {
+        let mut db = Db::open(&path, FRAMES).unwrap();
+        write_committed(&mut db, b"alice", b"100");
+        let mut deleter = db.begin().unwrap();
+        db.delete(&mut deleter, b"alice").unwrap();
+        db.commit(deleter);
+        db.close().unwrap();
+    }
+
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), None);
+}

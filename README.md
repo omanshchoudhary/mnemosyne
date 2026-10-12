@@ -28,21 +28,23 @@ Work in progress. Storage, the index and a first cut of MVCC are in:
 | **B+tree** | Insert, lookup, delete, range scan, splits and merges |
 | **Heap** | Append-only records on slotted pages; values live here and the tree points at them |
 | **MVCC** | Per-key version chains, newest first, stamped with begin and end timestamps; snapshot visibility |
-| **Db** | `begin`, `get`, `put`, `commit` and `close` over all of the above |
+| **Db** | `begin`, `get`, `put`, `delete`, `commit` and `close` over all of the above |
+| **Concurrency** | First writer wins: a write to a key a concurrent transaction already touched fails with `WriteConflict` |
 
-Still ahead: write-write conflict detection, abort, delete through `Db`, version
-GC, WAL, ARIES-style recovery.
+Still ahead: abort, version GC, WAL, ARIES-style recovery.
 
 Two limits in the tree are deliberate. A merged-away page is not reused yet, so
 the file only grows; the free list belongs with GC. And an underfull node whose
 sibling will not fit is left underfull rather than redistributed, which costs
 some density and no correctness.
 
-The transaction layer is a first cut. Reads are snapshot-consistent, but until
-conflict detection lands, two transactions can both update the same key and one
-of the writes is lost. There is no abort yet. A commit is not durable on its
-own: pages reach disk on eviction or `close`, so a crash can lose committed work
-until the WAL is in. Old versions are never reclaimed.
+The transaction layer is a first cut. Dirty reads, non-repeatable reads and
+lost updates are all prevented; write skew is not, which is the anomaly
+snapshot isolation allows by definition. There is no abort yet, so a
+transaction that hits a conflict cannot roll back what it wrote before it. A
+commit is not durable on its own: pages reach disk on eviction or `close`, so a
+crash can lose committed work until the WAL is in. Old versions are never
+reclaimed.
 
 Build notes live in [`docs/build-thread.md`](docs/build-thread.md).
 
@@ -90,14 +92,21 @@ db.commit(txn);
 let reader = db.begin()?;
 let value = db.get(&reader, b"alice")?;
 
+let mut txn = db.begin()?;
+let existed = db.delete(&mut txn, b"alice")?;
+db.commit(txn);
+
 db.close()?;
 ```
 
 `open` creates a fresh file or reopens an existing one, and timestamps carry on
 from where the last session stopped. A transaction sees its own writes and
 everything committed before it began, and nothing else, for as long as it runs.
-`commit` makes its writes visible to transactions that begin afterwards. `close`
-writes every dirty page to disk.
+`commit` makes its writes visible to transactions that begin afterwards.
+`delete` ends the newest version and reports whether the key was there; older
+transactions keep reading the value. A `put` or `delete` on a key a concurrent
+transaction already wrote returns `WriteConflict`, and the caller retries in a
+new transaction. `close` writes every dirty page to disk.
 
 The B+tree underneath is usable on its own (`BTree::open`, `insert`, `lookup`,
 `scan`, `delete`), mapping keys to `RecordId`s. `scan` is half-open:

@@ -14,3 +14,4 @@ Posts in reading order (oldest first).
 8. **Inside the Page: Tuple Layout** — https://x.com/PhantomC0der/status/2091782722922725587
 9. **DBMS Architecture: From Query to Disk** — https://x.com/PhantomC0der/status/2092114176215044354
 10. **In-Memory Databases: Snapshots and Checkpoints** — https://x.com/PhantomC0der/status/2101669102083350566
+11. **Row Oriented vs Column Oriented Storage** — https://x.com/PhantomC0der/status/2109690654347629017

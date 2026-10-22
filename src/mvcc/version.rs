@@ -2,13 +2,16 @@
 
 use crate::page::{PageId, RecordId};
 
-const OFF_BEGIN: usize = 0;
-const OFF_END: usize = 8;
-const OFF_PREV: usize = 16;
-const VERSION_HEADER_SIZE: usize = OFF_PREV + RecordId::SIZE;
+// a record header, not a page one: these bytes sit in front of one value in a heap record
+const OFF_BEGIN: usize = 0; // u64 - txn that wrote this version
+const OFF_END: usize = 8; // u64 - txn that replaced it
+const OFF_PREV: usize = 16; // RecordId - the next older version of the same key
+const VERSION_HEADER_SIZE: usize = OFF_PREV + RecordId::SIZE; // the value starts here
 
+// bigger than any timestamp, so nobody ever sees the end of a current version
 pub(crate) const NO_END: u64 = u64::MAX;
 
+// page 0 is the meta page, so (0, 0) is never a real version
 const NO_PREV: RecordId = RecordId {
     page: PageId(0),
     slot: 0,

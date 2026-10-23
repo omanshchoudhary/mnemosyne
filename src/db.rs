@@ -88,6 +88,7 @@ impl Db {
             heap::overwrite(self.tree.pool(), old_rid, &old_version)?;
         }
 
+        txn.writes.push(key.to_vec());
         self.tree.insert(key, new_rid)
     }
 
@@ -110,7 +111,46 @@ impl Db {
         set_version_end(&mut old_version, txn.timestamp);
         heap::overwrite(self.tree.pool(), old_rid, &old_version)?;
 
+        txn.writes.push(key.to_vec());
         Ok(true)
+    }
+
+    // undoes every write this txn made, then takes it out of the active set
+    pub fn abort(&mut self, txn: Txn) -> Result<()> {
+        for key in &txn.writes {
+            let Some(mut rid) = self.tree.lookup(key)? else {
+                continue;
+            };
+
+            // walk back past every version i wrote
+            let restored = loop {
+                let version = heap::get(self.tree.pool(), rid)?;
+                if version_begin(&version) != txn.timestamp {
+                    break Some((rid, version));
+                }
+                match version_prev(&version) {
+                    Some(older) => rid = older,
+                    None => break None,
+                }
+            };
+
+            match restored {
+                Some((old_rid, mut old_version)) => {
+                    if version_end(&old_version) == txn.timestamp {
+                        set_version_end(&mut old_version, NO_END);
+                        heap::overwrite(self.tree.pool(), old_rid, &old_version)?;
+                    }
+                    self.tree.insert(key, old_rid)?;
+                }
+                // the key never existed before me
+                None => {
+                    self.tree.delete(key)?;
+                }
+            }
+        }
+
+        self.txns.finish(txn.timestamp);
+        Ok(())
     }
 
     // txn stops running, so txns that begin after this can see its writes

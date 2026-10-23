@@ -8,6 +8,9 @@ pub struct Txn {
     pub(crate) timestamp: u64,
     // snapshot: other transactions that had begun but hadn't committed or aborted at the instant I started
     pub(crate) running_at_begin: BTreeSet<u64>,
+
+    // keys i wrote, the undo list for abort
+    pub(crate) writes: Vec<Vec<u8>>,
 }
 
 impl Txn {
@@ -51,6 +54,7 @@ impl TxnManager {
         Txn {
             timestamp,
             running_at_begin,
+            writes: Vec::new(),
         }
     }
 

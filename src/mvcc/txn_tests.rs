@@ -9,6 +9,7 @@ fn txn(timestamp: u64, running_at_begin: &[u64]) -> Txn {
     Txn {
         timestamp,
         running_at_begin: set(running_at_begin),
+        writes: Vec::new(),
     }
 }
 

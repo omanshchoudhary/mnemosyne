@@ -514,3 +514,33 @@ fn a_delete_survives_a_reopen() {
 
     assert_eq!(db.get(&reader, b"alice").unwrap(), None);
 }
+
+#[test]
+fn write_skew_is_allowed_because_the_two_writes_touch_different_keys() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    let mut setup = db.begin().unwrap();
+    db.put(&mut setup, b"alice", &1u64.to_le_bytes()).unwrap();
+    db.put(&mut setup, b"bob", &1u64.to_le_bytes()).unwrap();
+    db.commit(setup);
+
+    let mut alice_leaves = db.begin().unwrap();
+    let mut bob_leaves = db.begin().unwrap();
+    let seen_by_alice =
+        balance(&mut db, &alice_leaves, b"alice") + balance(&mut db, &alice_leaves, b"bob");
+    let seen_by_bob =
+        balance(&mut db, &bob_leaves, b"alice") + balance(&mut db, &bob_leaves, b"bob");
+    db.put(&mut alice_leaves, b"alice", &0u64.to_le_bytes())
+        .unwrap();
+    db.put(&mut bob_leaves, b"bob", &0u64.to_le_bytes())
+        .unwrap();
+    db.commit(alice_leaves);
+    db.commit(bob_leaves);
+    let reader = db.begin().unwrap();
+
+    assert_eq!((seen_by_alice, seen_by_bob), (2, 2));
+    assert_eq!(
+        balance(&mut db, &reader, b"alice") + balance(&mut db, &reader, b"bob"),
+        0
+    );
+}

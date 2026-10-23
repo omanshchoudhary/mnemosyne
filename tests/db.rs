@@ -544,3 +544,147 @@ fn write_skew_is_allowed_because_the_two_writes_touch_different_keys() {
         0
     );
 }
+
+#[test]
+fn an_aborted_put_restores_the_previous_value() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut txn = db.begin().unwrap();
+    db.put(&mut txn, b"alice", b"200").unwrap();
+    db.abort(txn).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn an_aborted_put_on_a_new_key_leaves_it_absent() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+
+    let mut txn = db.begin().unwrap();
+    db.put(&mut txn, b"alice", b"100").unwrap();
+    db.abort(txn).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), None);
+}
+
+#[test]
+fn an_aborted_delete_brings_the_key_back() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut txn = db.begin().unwrap();
+    assert!(db.delete(&mut txn, b"alice").unwrap());
+    db.abort(txn).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn a_txn_that_wrote_a_key_twice_restores_the_original() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut txn = db.begin().unwrap();
+    db.put(&mut txn, b"alice", b"200").unwrap();
+    db.put(&mut txn, b"alice", b"300").unwrap();
+    db.abort(txn).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn an_abort_undoes_every_key_the_txn_touched() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+    write_committed(&mut db, b"bob", b"200");
+
+    let mut txn = db.begin().unwrap();
+    db.put(&mut txn, b"alice", b"150").unwrap();
+    db.delete(&mut txn, b"bob").unwrap();
+    db.put(&mut txn, b"carol", b"300").unwrap();
+    db.abort(txn).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+    assert_eq!(db.get(&reader, b"bob").unwrap(), Some(b"200".to_vec()));
+    assert_eq!(db.get(&reader, b"carol").unwrap(), None);
+}
+
+#[test]
+fn aborting_a_txn_that_wrote_nothing_is_harmless() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let txn = db.begin().unwrap();
+    db.abort(txn).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn a_key_is_writable_again_once_the_txn_that_wrote_it_aborted() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut abandoned = db.begin().unwrap();
+    db.put(&mut abandoned, b"alice", b"200").unwrap();
+    db.abort(abandoned).unwrap();
+
+    let mut later = db.begin().unwrap();
+    assert!(db.put(&mut later, b"alice", b"300").is_ok());
+    db.commit(later);
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"300".to_vec()));
+}
+
+#[test]
+fn the_loser_of_a_conflict_aborts_and_the_winner_still_commits() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let mut winner = db.begin().unwrap();
+    let mut loser = db.begin().unwrap();
+    db.put(&mut loser, b"bob", b"50").unwrap();
+    db.put(&mut winner, b"alice", b"150").unwrap();
+    let rejected = db.put(&mut loser, b"alice", b"130");
+    db.abort(loser).unwrap();
+    db.commit(winner);
+    let reader = db.begin().unwrap();
+
+    assert!(matches!(rejected, Err(Error::WriteConflict)));
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"150".to_vec()));
+    assert_eq!(db.get(&reader, b"bob").unwrap(), None);
+}
+
+#[test]
+fn an_abort_survives_a_reopen() {
+    let (_dir, path) = temp_db();
+    {
+        let mut db = Db::open(&path, FRAMES).unwrap();
+        write_committed(&mut db, b"alice", b"100");
+        let mut txn = db.begin().unwrap();
+        db.put(&mut txn, b"alice", b"200").unwrap();
+        db.abort(txn).unwrap();
+        db.close().unwrap();
+    }
+
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}

@@ -629,3 +629,47 @@ fn overwriting_after_a_split_finds_the_right_leaf() {
     assert_eq!(tree.lookup(&key_of(249)).unwrap(), Some(rid(1, 249)));
     assert_eq!(tree.lookup(&key_of(251)).unwrap(), Some(rid(1, 251)));
 }
+
+#[test]
+fn keys_on_an_empty_tree_is_empty() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    assert!(tree.keys().unwrap().is_empty());
+}
+
+#[test]
+fn keys_returns_every_pair_in_order() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+
+    let seen = tree.keys().unwrap();
+    let expected: Vec<(Vec<u8>, RecordId)> = (0..600u16).map(|i| (key_of(i), rid(1, i))).collect();
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn keys_leaves_out_what_was_deleted() {
+    let (_dir, path) = temp_db();
+    let mut tree = BTree::open(&path, FRAMES).unwrap();
+
+    for i in 0..600u16 {
+        tree.insert(&key_of(i), rid(1, i)).unwrap();
+    }
+    for i in 0..300u16 {
+        tree.delete(&key_of(i)).unwrap();
+    }
+
+    let seen: Vec<Vec<u8>> = tree
+        .keys()
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let expected: Vec<Vec<u8>> = (300..600u16).map(key_of).collect();
+    assert_eq!(seen, expected);
+}

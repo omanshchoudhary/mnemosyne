@@ -424,6 +424,29 @@ impl BTree {
         }
         Ok(out)
     }
+    // every key in the tree, in order
+    pub fn keys(&mut self) -> Result<Vec<(Vec<u8>, RecordId)>> {
+        let mut frame = self.find_leaf(b"")?;
+        let mut out = Vec::new();
+
+        loop {
+            for slot in 0..self.pool.page(frame).slot_count() {
+                let key = self.pool.page(frame).leaf_key(slot)?.to_vec();
+                let rid = self.pool.page(frame).leaf_record_id(slot)?;
+                out.push((key, rid));
+            }
+            let next = self.pool.page(frame).next_leaf();
+            self.pool.unpin(frame)?;
+
+            match next {
+                Some(page_id) => frame = self.pool.fetch_and_pin(page_id)?,
+                None => break,
+            }
+        }
+
+        Ok(out)
+    }
+
     pub(crate) fn pool(&mut self) -> &mut BufferPool {
         &mut self.pool
     }

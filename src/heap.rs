@@ -63,6 +63,14 @@ pub(crate) fn overwrite(pool: &mut BufferPool, rid: RecordId, record: &[u8]) -> 
     written
 }
 
+// marks the record gone, its bytes become free space on the page
+pub(crate) fn free(pool: &mut BufferPool, rid: RecordId) -> Result<()> {
+    let frame = pool.fetch_and_pin(rid.page)?;
+    let freed = pool.page_for_write(frame).tombstone_slot(rid.slot);
+    pool.unpin(frame)?;
+    freed
+}
+
 #[cfg(test)]
 #[path = "heap_tests.rs"]
 mod tests;

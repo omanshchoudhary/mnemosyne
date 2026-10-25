@@ -98,3 +98,33 @@ fn stamping_an_end_leaves_everything_else_alone() {
     assert_eq!(version_prev(&version), Some(rid(4, 1)));
     assert_eq!(version_value(&version), b"hello");
 }
+
+#[test]
+fn a_rewritten_prev_reads_back() {
+    let mut version = encode_version(1, Some(rid(3, 2)), b"v");
+
+    set_version_prev(&mut version, Some(rid(9, 4)));
+
+    assert_eq!(version_prev(&version), Some(rid(9, 4)));
+}
+
+#[test]
+fn cutting_the_prev_leaves_no_prev() {
+    let mut version = encode_version(1, Some(rid(3, 2)), b"v");
+
+    set_version_prev(&mut version, None);
+
+    assert_eq!(version_prev(&version), None);
+}
+
+#[test]
+fn rewriting_the_prev_leaves_the_rest_alone() {
+    let mut version = encode_version(7, Some(rid(3, 2)), b"hello");
+    set_version_end(&mut version, 9);
+
+    set_version_prev(&mut version, Some(rid(1, 1)));
+
+    assert_eq!(version_begin(&version), 7);
+    assert_eq!(version_end(&version), 9);
+    assert_eq!(version_value(&version), b"hello");
+}

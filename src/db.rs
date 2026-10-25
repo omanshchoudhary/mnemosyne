@@ -5,9 +5,10 @@ use crate::error::{Error, Result};
 use crate::heap;
 use crate::mvcc::txn::{Txn, TxnManager};
 use crate::mvcc::version::{
-    NO_END, encode_version, set_version_end, version_begin, version_end, version_prev,
-    version_value,
+    NO_END, encode_version, set_version_end, set_version_prev, version_begin, version_end,
+    version_prev, version_value,
 };
+use crate::page::RecordId;
 use crate::page::meta::META_PAGE_ID;
 
 pub struct Db {
@@ -151,6 +152,65 @@ impl Db {
 
         self.txns.finish(txn.timestamp);
         Ok(())
+    }
+
+    // frees every version no live or future txn can reach, returns how many
+    pub fn gc(&mut self) -> Result<usize> {
+        let mut count = 0;
+        let watermark = self.txns.watermark();
+        for (key, rid) in self.tree.keys()? {
+            count += self.gc_key(&key, rid, watermark)?;
+        }
+        Ok(count)
+    }
+
+    // cuts one chain below the oldest version still readable
+    fn gc_key(&mut self, key: &[u8], head: RecordId, watermark: u64) -> Result<usize> {
+        let mut rid = head;
+        let mut survivor = None;
+
+        // dead is the first version nobody can reach, survivor is the live one above it
+        let dead = loop {
+            let version = heap::get(self.tree.pool(), rid)?;
+            let end = version_end(&version);
+            if end != NO_END && end < watermark {
+                break Some(rid);
+            }
+            match version_prev(&version) {
+                Some(older) => {
+                    survivor = Some(rid);
+                    rid = older;
+                }
+                None => break None,
+            }
+        };
+
+        let Some(dead) = dead else {
+            return Ok(0);
+        };
+
+        match survivor {
+            Some(survivor) => {
+                let mut version = heap::get(self.tree.pool(), survivor)?;
+                set_version_prev(&mut version, None);
+                heap::overwrite(self.tree.pool(), survivor, &version)?;
+            }
+            // the head itself was dead, so the key has no live version left
+            None => {
+                self.tree.delete(key)?;
+            }
+        }
+
+        let mut count = 0;
+        let mut rid = Some(dead);
+        while let Some(doomed) = rid {
+            let version = heap::get(self.tree.pool(), doomed)?;
+            rid = version_prev(&version);
+            heap::free(self.tree.pool(), doomed)?;
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     // txn stops running, so txns that begin after this can see its writes

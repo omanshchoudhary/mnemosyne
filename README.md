@@ -28,23 +28,25 @@ Work in progress. Storage, the index and a first cut of MVCC are in:
 | **B+tree** | Insert, lookup, delete, range scan, splits and merges |
 | **Heap** | Append-only records on slotted pages; values live here and the tree points at them |
 | **MVCC** | Per-key version chains, newest first, stamped with begin and end timestamps; snapshot visibility |
-| **Db** | `begin`, `get`, `put`, `delete`, `commit` and `close` over all of the above |
+| **Db** | `begin`, `get`, `put`, `delete`, `abort`, `commit`, `gc` and `close` over all of the above |
 | **Concurrency** | First writer wins: a write to a key a concurrent transaction already touched fails with `WriteConflict` |
+| **Abort** | A transaction remembers the keys it wrote and undoes them, leaving the versions underneath as they were |
+| **GC** | A watermark below which nothing is reachable, then dead versions are freed and fully dead keys leave the tree |
 
-Still ahead: abort, version GC, WAL, ARIES-style recovery.
+Still ahead: WAL, ARIES-style recovery.
 
 Two limits in the tree are deliberate. A merged-away page is not reused yet, so
-the file only grows; the free list belongs with GC. And an underfull node whose
-sibling will not fit is left underfull rather than redistributed, which costs
-some density and no correctness.
+the file only grows; the free list is the next piece of GC. And an underfull
+node whose sibling will not fit is left underfull rather than redistributed,
+which costs some density and no correctness.
 
 The transaction layer is a first cut. Dirty reads, non-repeatable reads and
 lost updates are all prevented; write skew is not, which is the anomaly
-snapshot isolation allows by definition. There is no abort yet, so a
-transaction that hits a conflict cannot roll back what it wrote before it. A
-commit is not durable on its own: pages reach disk on eviction or `close`, so a
-crash can lose committed work until the WAL is in. Old versions are never
-reclaimed.
+snapshot isolation allows by definition. A commit is not durable on its own:
+pages reach disk on eviction or `close`, so a crash can lose committed work
+until the WAL is in. `gc` frees a dead version's slot, but its bytes stay on the
+page until a compaction and a page that empties out is not handed back to the
+file.
 
 Build notes live in [`docs/build-thread.md`](docs/build-thread.md).
 
@@ -62,7 +64,7 @@ src/
   btree/node.rs     leaf / internal encoding and search
   heap.rs           append-only records, tail tracked in page 0
   mvcc/version.rs   version record: begin, end, prev, value
-  mvcc/txn.rs       timestamps, snapshots, visibility
+  mvcc/txn.rs       timestamps, snapshots, visibility, the gc watermark
   db.rs             transactional get / put over the tree and heap
 tests/
   db.rs             end-to-end transaction scenarios
@@ -96,6 +98,12 @@ let mut txn = db.begin()?;
 let existed = db.delete(&mut txn, b"alice")?;
 db.commit(txn);
 
+let mut txn = db.begin()?;
+db.put(&mut txn, b"bob", b"200")?;
+db.abort(txn)?;
+
+let freed = db.gc()?;
+
 db.close()?;
 ```
 
@@ -106,7 +114,11 @@ everything committed before it began, and nothing else, for as long as it runs.
 `delete` ends the newest version and reports whether the key was there; older
 transactions keep reading the value. A `put` or `delete` on a key a concurrent
 transaction already wrote returns `WriteConflict`, and the caller retries in a
-new transaction. `close` writes every dirty page to disk.
+new transaction. `abort` undoes everything a transaction wrote, which is what a
+caller reaches for after a conflict. `gc` frees every version no transaction can
+reach any more; nothing calls it on its own, and it is safe at any time,
+including while transactions are open, because an open transaction holds the
+watermark down. `close` writes every dirty page to disk.
 
 The B+tree underneath is usable on its own (`BTree::open`, `insert`, `lookup`,
 `scan`, `delete`), mapping keys to `RecordId`s. `scan` is half-open:

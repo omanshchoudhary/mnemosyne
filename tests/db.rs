@@ -688,3 +688,146 @@ fn an_abort_survives_a_reopen() {
 
     assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
 }
+
+#[test]
+fn gc_on_a_db_with_one_version_per_key_frees_nothing() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+    write_committed(&mut db, b"bob", b"200");
+
+    assert_eq!(db.gc().unwrap(), 0);
+}
+
+#[test]
+fn gc_frees_the_versions_an_overwrite_left_behind() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+    write_committed(&mut db, b"alice", b"200");
+    write_committed(&mut db, b"alice", b"300");
+
+    let freed = db.gc().unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(freed, 2);
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"300".to_vec()));
+}
+
+#[test]
+fn gc_keeps_a_version_an_open_reader_still_needs() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let reader = db.begin().unwrap();
+    write_committed(&mut db, b"alice", b"200");
+    let freed = db.gc().unwrap();
+
+    assert_eq!(freed, 0);
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn gc_frees_that_version_once_the_reader_is_done() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let reader = db.begin().unwrap();
+    write_committed(&mut db, b"alice", b"200");
+    assert_eq!(db.gc().unwrap(), 0);
+    db.commit(reader);
+
+    let freed = db.gc().unwrap();
+    let after = db.begin().unwrap();
+
+    assert_eq!(freed, 1);
+    assert_eq!(db.get(&after, b"alice").unwrap(), Some(b"200".to_vec()));
+}
+
+#[test]
+fn a_fully_deleted_key_leaves_the_tree() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+    write_committed(&mut db, b"bob", b"200");
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+
+    let freed = db.gc().unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(freed, 1);
+    assert_eq!(db.get(&reader, b"alice").unwrap(), None);
+    assert_eq!(db.get(&reader, b"bob").unwrap(), Some(b"200".to_vec()));
+}
+
+#[test]
+fn a_deleted_key_stays_until_the_reader_that_needs_it_is_done() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    write_committed(&mut db, b"alice", b"100");
+
+    let reader = db.begin().unwrap();
+    let mut deleter = db.begin().unwrap();
+    db.delete(&mut deleter, b"alice").unwrap();
+    db.commit(deleter);
+
+    assert_eq!(db.gc().unwrap(), 0);
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"100".to_vec()));
+}
+
+#[test]
+fn a_second_gc_pass_frees_nothing() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    for value in [b"100", b"200", b"300"] {
+        write_committed(&mut db, b"alice", value);
+    }
+
+    db.gc().unwrap();
+
+    assert_eq!(db.gc().unwrap(), 0);
+}
+
+#[test]
+fn gc_walks_every_key() {
+    let (_dir, path) = temp_db();
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    for i in 0..50u32 {
+        let key = format!("key{i:04}");
+        write_committed(&mut db, key.as_bytes(), b"first");
+        write_committed(&mut db, key.as_bytes(), b"second");
+    }
+
+    let freed = db.gc().unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(freed, 50);
+    for i in 0..50u32 {
+        let key = format!("key{i:04}");
+        assert_eq!(
+            db.get(&reader, key.as_bytes()).unwrap(),
+            Some(b"second".to_vec())
+        );
+    }
+}
+
+#[test]
+fn a_collected_db_still_reads_right_after_a_reopen() {
+    let (_dir, path) = temp_db();
+    {
+        let mut db = Db::open(&path, FRAMES).unwrap();
+        write_committed(&mut db, b"alice", b"100");
+        write_committed(&mut db, b"alice", b"200");
+        db.gc().unwrap();
+        db.close().unwrap();
+    }
+
+    let mut db = Db::open(&path, FRAMES).unwrap();
+    let reader = db.begin().unwrap();
+
+    assert_eq!(db.get(&reader, b"alice").unwrap(), Some(b"200".to_vec()));
+}

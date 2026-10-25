@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::version::NO_END;
 
@@ -35,6 +35,8 @@ pub(crate) struct TxnManager {
     next_timestamp: u64,
     // current running transactions
     active: BTreeSet<u64>,
+    // per running txn, the oldest timestamp it still has to be able to read
+    floors: BTreeMap<u64, u64>,
 }
 
 impl TxnManager {
@@ -42,6 +44,7 @@ impl TxnManager {
         Self {
             next_timestamp,
             active: BTreeSet::new(),
+            floors: BTreeMap::new(),
         }
     }
 
@@ -50,6 +53,8 @@ impl TxnManager {
         let timestamp = self.next_timestamp;
         self.next_timestamp += 1;
         let running_at_begin = self.active.clone();
+        let floor = running_at_begin.first().copied().unwrap_or(timestamp);
+        self.floors.insert(timestamp, floor);
         self.active.insert(timestamp);
         Txn {
             timestamp,
@@ -58,8 +63,19 @@ impl TxnManager {
         }
     }
 
+    // nothing below this can ever be read again
+    pub(crate) fn watermark(&self) -> u64 {
+        self.floors
+            .values()
+            .min()
+            .copied()
+            // nothing running, so every replaced version is free to go
+            .unwrap_or(self.next_timestamp)
+    }
+
     pub(crate) fn finish(&mut self, timestamp: u64) {
         self.active.remove(&timestamp);
+        self.floors.remove(&timestamp);
     }
 }
 

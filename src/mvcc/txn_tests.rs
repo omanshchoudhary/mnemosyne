@@ -227,3 +227,60 @@ fn an_ended_head_is_judged_by_the_txn_that_ended_it() {
     assert!(txn(9, &[]).can_add_newer_version(3, 7));
     assert!(!txn(9, &[7]).can_add_newer_version(3, 7));
 }
+
+#[test]
+fn the_watermark_is_the_next_timestamp_when_nothing_is_running() {
+    let manager = TxnManager::new(7);
+
+    assert_eq!(manager.watermark(), 7);
+}
+
+#[test]
+fn a_lone_txn_is_its_own_watermark() {
+    let mut manager = TxnManager::new(1);
+    manager.begin();
+
+    assert_eq!(manager.watermark(), 1);
+}
+
+#[test]
+fn the_watermark_is_the_oldest_running_txn() {
+    let mut manager = TxnManager::new(1);
+    manager.begin();
+    manager.begin();
+    manager.begin();
+
+    assert_eq!(manager.watermark(), 1);
+}
+
+#[test]
+fn the_watermark_holds_at_a_finished_txn_that_is_still_in_a_photo() {
+    let mut manager = TxnManager::new(1);
+    let first = manager.begin();
+    manager.begin();
+    manager.finish(first.timestamp);
+
+    assert_eq!(manager.watermark(), 1);
+}
+
+#[test]
+fn the_watermark_ignores_txns_that_began_later() {
+    let mut manager = TxnManager::new(1);
+    manager.begin();
+    let second = manager.begin();
+    manager.begin();
+    manager.finish(second.timestamp);
+
+    assert_eq!(manager.watermark(), 1);
+}
+
+#[test]
+fn the_watermark_moves_up_once_everyone_finishes() {
+    let mut manager = TxnManager::new(1);
+    let first = manager.begin();
+    let second = manager.begin();
+    manager.finish(first.timestamp);
+    manager.finish(second.timestamp);
+
+    assert_eq!(manager.watermark(), 3);
+}

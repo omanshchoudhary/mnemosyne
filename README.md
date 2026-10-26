@@ -17,7 +17,9 @@ parts of a database that make data survive a power cut.
 
 ## Status
 
-Work in progress. Storage, the index and a first cut of MVCC are in:
+Everything below is built and tested. The engine is correct in process and
+durable across a clean shutdown; every layer does its whole job, and none of
+them is a stub waiting on the next one.
 
 | Layer | What it does |
 |-------|----------------|
@@ -30,25 +32,43 @@ Work in progress. Storage, the index and a first cut of MVCC are in:
 | **MVCC** | Per-key version chains, newest first, stamped with begin and end timestamps; snapshot visibility |
 | **Db** | `begin`, `get`, `put`, `delete`, `abort`, `commit`, `gc` and `close` over all of the above |
 | **Concurrency** | First writer wins: a write to a key a concurrent transaction already touched fails with `WriteConflict` |
-| **Abort** | A transaction remembers the keys it wrote and undoes them, leaving the versions underneath as they were |
+| **Abort** | A transaction remembers the keys it wrote, undoes them and frees the versions it appended, leaving the ones underneath as they were |
 | **GC** | A watermark below which nothing is reachable, then dead versions are freed and fully dead keys leave the tree |
 
-Still ahead: WAL, ARIES-style recovery.
-
 Two limits in the tree are deliberate. A merged-away page is not reused yet, so
-the file only grows; the free list is the next piece of GC. And an underfull
-node whose sibling will not fit is left underfull rather than redistributed,
-which costs some density and no correctness.
+the file only grows; the free list comes with the space work below. And an
+underfull node whose sibling will not fit is left underfull rather than
+redistributed, which costs some density and no correctness.
 
-The transaction layer is a first cut. Dirty reads, non-repeatable reads and
-lost updates are all prevented; write skew is not, which is the anomaly
-snapshot isolation allows by definition. A commit is not durable on its own:
-pages reach disk on eviction or `close`, so a crash can lose committed work
-until the WAL is in. `gc` frees a dead version's slot, but its bytes stay on the
-page until a compaction and a page that empties out is not handed back to the
-file.
+The transaction layer gives snapshot isolation, not serializability. Dirty
+reads, non-repeatable reads and lost updates are all prevented; write skew is
+not, which is the anomaly snapshot isolation allows by definition. Durability
+stops at a clean close: pages reach disk on eviction or `close`, so an unclean
+crash can both lose committed work and bring back the writes of a transaction
+that was still running, because `Db::open` starts with an empty active set and
+no undo pass runs. `gc` frees a dead version's slot, but the bytes stay on the
+page until a compaction pass and a page that empties out is not handed back to
+the file.
 
 Build notes live in [`docs/build-thread.md`](docs/build-thread.md).
+
+## Still to come
+
+Two segments are left. Neither of them goes back and changes a layer that is
+already built.
+
+**Durability.** A write-ahead log, then ARIES-style recovery. The log sits
+beside the buffer pool and constrains when a page may be flushed, so a committed
+transaction is on disk before the call returns. Recovery runs once at open:
+redo what was logged and not applied, undo what was in flight. That closes the
+crash hole described above.
+
+**Space reuse.** Collecting a version frees its slot, not its bytes, and a page
+that empties out stays allocated. Both want a space manager sitting under the
+heap and the tree: in-page compaction to pack live records down, and a free
+list of pages the file can hand back out. The B+tree needs the same free list
+for the nodes it merges away, which is why this belongs below both of them
+rather than inside GC.
 
 ## Layout
 

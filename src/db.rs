@@ -123,12 +123,15 @@ impl Db {
                 continue;
             };
 
+            let mut mine = Vec::new();
+
             // walk back past every version i wrote
             let restored = loop {
                 let version = heap::get(self.tree.pool(), rid)?;
                 if version_begin(&version) != txn.timestamp {
                     break Some((rid, version));
                 }
+                mine.push(rid);
                 match version_prev(&version) {
                     Some(older) => rid = older,
                     None => break None,
@@ -147,6 +150,11 @@ impl Db {
                 None => {
                     self.tree.delete(key)?;
                 }
+            }
+
+            // nothing points at them now, so this is the last chance to free them
+            for doomed in mine {
+                heap::free(self.tree.pool(), doomed)?;
             }
         }
 
@@ -223,3 +231,7 @@ impl Db {
         self.tree.pool().flush_all()
     }
 }
+
+#[cfg(test)]
+#[path = "db_tests.rs"]
+mod tests;

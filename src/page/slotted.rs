@@ -1,6 +1,3 @@
-// TODO: drop once the buffer pool and B+tree call into this layer.
-#![allow(dead_code)]
-
 use crate::error::{Error, Result};
 use crate::page::{PAGE_SIZE, Page};
 

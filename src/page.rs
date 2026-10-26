@@ -38,8 +38,6 @@ impl RecordId {
     }
 }
 
-// TODO: drop both allow(dead_code) once slotted.rs uses these.
-#[allow(dead_code)]
 pub struct Page {
     data: [u8; PAGE_SIZE],
 }
@@ -50,7 +48,6 @@ impl Default for Page {
     }
 }
 
-#[allow(dead_code)]
 impl Page {
     pub fn new() -> Self {
         Self {

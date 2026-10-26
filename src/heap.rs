@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::buffer::BufferPool;
 use crate::error::{Error, Result};
 use crate::page::RecordId;

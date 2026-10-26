@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::page::{Page, PageId};
 
 // 0 reserved for MetaPage

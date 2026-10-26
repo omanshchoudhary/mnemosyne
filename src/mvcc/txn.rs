@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::version::NO_END;

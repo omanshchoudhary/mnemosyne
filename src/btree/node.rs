@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::Result;
 use crate::page::{
     PAGE_SIZE, Page, PageId, RecordId,
@@ -23,6 +21,7 @@ impl Page {
         self.page_type() == PAGE_TYPE_LEAF
     }
 
+    #[cfg(test)]
     pub(crate) fn is_internal(&self) -> bool {
         self.page_type() == PAGE_TYPE_INTERNAL
     }

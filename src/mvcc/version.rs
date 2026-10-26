@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::page::{PageId, RecordId};
 
 // a record header, not a page one: these bytes sit in front of one value in a heap record
@@ -28,7 +26,7 @@ pub(crate) fn encode_version(begin: u64, prev: Option<RecordId>, value: &[u8]) -
 }
 
 pub(crate) fn version_begin(version: &[u8]) -> u64 {
-    u64::from_le_bytes(version[..OFF_END].try_into().unwrap())
+    u64::from_le_bytes(version[OFF_BEGIN..OFF_END].try_into().unwrap())
 }
 
 pub(crate) fn version_end(version: &[u8]) -> u64 {
